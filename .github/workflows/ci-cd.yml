@@ -1,4 +1,4 @@
-# Workflow do execution-service: chama o pipeline reutilizável do ci-templates.
+# Workflow do os-service: chama o pipeline reutilizável do ci-templates.
 # Para billing-service e execution-service, copie este arquivo e troque
 # service-name e sonar-project-key.
 
@@ -14,8 +14,8 @@ jobs:
   pipeline:
     uses: jaimorais2007/ci-templates/.github/workflows/dotnet-service.yml@main
     with:
-      service-name: execution-service
-      sonar-project-key: jaimorais2007_execution-service
+      service-name: os-service
+      sonar-project-key: jaimorais2007_os-service
       # deploy: true   # ativar quando o cluster e o secret KUBE_CONFIG existirem
     permissions:
       contents: read
