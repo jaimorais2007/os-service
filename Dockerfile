@@ -24,4 +24,7 @@ ENV ASPNETCORE_URLS=http://+:8080
 
 COPY --from=build /app/publish .
 
+# Executa a aplicação sem privilégios de root
+USER $APP_UID
+
 ENTRYPOINT ["dotnet", "OSService.Api.dll"]

@@ -30,6 +30,6 @@ app.MapControllers();
 // Endpoint para verificar a saúde da aplicação
 app.MapHealthChecks("/health");
 
-app.Run();
+await app.RunAsync();
 
 public partial class Program { }
