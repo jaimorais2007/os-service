@@ -24,6 +24,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\OSService.Application\OSService.Application.csproj" />
     <ProjectReference Include="..\..\src\OSService.Domain\OSService.Domain.csproj" />
+    <ProjectReference Include="..\..\src\OSService.Api\OSService.Api.csproj" />
   </ItemGroup>
 
 </Project>

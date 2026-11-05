@@ -8,6 +8,12 @@ namespace OSService.Infrastructure.Migrations
 {
     public partial class InitialCreate : Migration
     {
+        private static readonly string[] ServiceOrderStatusIndexColumns =
+        {
+            "ServiceOrderId",
+            "CreatedAt"
+        };
+
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.CreateTable(
@@ -84,11 +90,7 @@ namespace OSService.Infrastructure.Migrations
             migrationBuilder.CreateIndex(
                 name: "IX_ServiceOrderStatus_ServiceOrderId_CreatedAt",
                 table: "ServiceOrderStatus",
-                columns: new[]
-                {
-                    "ServiceOrderId",
-                    "CreatedAt"
-                });
+                columns: ServiceOrderStatusIndexColumns);
         }
 
         protected override void Down(MigrationBuilder migrationBuilder)
