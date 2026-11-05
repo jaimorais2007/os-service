@@ -1,5 +1,21 @@
+using Microsoft.EntityFrameworkCore;
+using OSService.Infrastructure.Contextos;
+using OSService.Domain.Interfaces;
+using OSService.Infrastructure.Repositorios;
+using OSService.Application.Servicos;
 
 var builder = WebApplication.CreateBuilder(args);
+
+
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException("A connection string do PostgreSQL não foi configurada.");
+
+builder.Services.AddDbContext<OrdemServicoDbContext>(options =>
+{
+    options.UseNpgsql(connectionString);
+});
+
+builder.Services.AddScoped<IOrdemServicoRepositorio, OrdemServicoRepositorio>();
+builder.Services.AddScoped<OrdemServicoServico>();
 
 // Registra os controllers da API
 builder.Services.AddControllers();
@@ -20,7 +36,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+if (app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 
 app.UseAuthorization();
 
