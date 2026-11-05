@@ -28,4 +28,8 @@
     <ProjectReference Include="..\..\src\OSService.Api\OSService.Api.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="TestResults\" />
+  </ItemGroup>
+
 </Project>
