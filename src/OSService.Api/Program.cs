@@ -30,7 +30,10 @@ builder.Services.AddHealthChecks();
 
 // Configura o Swagger
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options => options.AddJwtSecurity());
+
+// Exige o JWT da Lambda de autenticação em todas as rotas (exceto /health)
+builder.Services.AddJwtAuthentication();
 
 var app = builder.Build();
 
@@ -55,13 +58,14 @@ if (app.Environment.IsDevelopment())
     app.UseHttpsRedirection();
 }
 
+app.UseAuthentication();
 app.UseAuthorization();
 
 // Mapeia os controllers
 app.MapControllers();
 
 // Endpoint para verificar a saúde da aplicação
-app.MapHealthChecks("/health");
+app.MapHealthChecks("/health").AllowAnonymous();
 
 await app.RunAsync();
 
