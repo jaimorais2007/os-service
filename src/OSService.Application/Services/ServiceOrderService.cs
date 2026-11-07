@@ -1,6 +1,7 @@
-﻿
+﻿using Microsoft.Extensions.Logging;
 using OSService.Application.Commands;
 using OSService.Domain.Entities;
+using OSService.Domain.Interface;
 using OSService.Domain.Interfaces;
 
 namespace OSService.Application.Services
@@ -8,10 +9,17 @@ namespace OSService.Application.Services
     public class ServiceOrderService
     {
         private readonly IServiceOrderRepository _repository;
+        private readonly IServiceOrderNotificationPublisher? _notificationPublisher;
+        private readonly ILogger<ServiceOrderService>? _logger;
 
-        public ServiceOrderService(IServiceOrderRepository repository)
+        public ServiceOrderService(
+            IServiceOrderRepository repository,
+            IServiceOrderNotificationPublisher? notificationPublisher = null,
+            ILogger<ServiceOrderService>? logger = null)
         {
             _repository = repository;
+            _notificationPublisher = notificationPublisher;
+            _logger = logger;
         }
 
         public async Task<ServiceOrderGetResponse> CreateAsync(
@@ -25,6 +33,15 @@ namespace OSService.Application.Services
 
             await _repository.AddAsync(serviceOrder);
             await _repository.SaveChangesAsync();
+
+            _logger?.LogInformation(
+                "Service Order successfully created. Id: {ServiceOrder}",
+                serviceOrder.Id);
+
+            await TryPublishNotificationAsync(
+                serviceOrder.CustomerId,
+                serviceOrder.Id,
+                serviceOrder.GetCurrentStatus().ToString());
 
             return MapResponse(serviceOrder);
         }
@@ -73,6 +90,11 @@ namespace OSService.Application.Services
 
             await _repository.SaveChangesAsync();
 
+            await TryPublishNotificationAsync(
+                serviceOrder.CustomerId,
+                serviceOrder.Id,
+                serviceOrder.GetCurrentStatus().ToString());
+
             return MapResponse(serviceOrder);
         }
 
@@ -88,6 +110,11 @@ namespace OSService.Application.Services
 
             await _repository.SaveChangesAsync();
 
+            await TryPublishNotificationAsync(
+                serviceOrder.CustomerId,
+                serviceOrder.Id,
+                serviceOrder.GetCurrentStatus().ToString());
+
             return MapResponse(serviceOrder);
         }
 
@@ -98,6 +125,11 @@ namespace OSService.Application.Services
             serviceOrder.Approve();
 
             await _repository.SaveChangesAsync();
+
+            await TryPublishNotificationAsync(
+                serviceOrder.CustomerId,
+                serviceOrder.Id,
+                serviceOrder.GetCurrentStatus().ToString());
 
             return MapResponse(serviceOrder);
         }
@@ -110,6 +142,11 @@ namespace OSService.Application.Services
 
             await _repository.SaveChangesAsync();
 
+            await TryPublishNotificationAsync(
+                serviceOrder.CustomerId,
+                serviceOrder.Id,
+                serviceOrder.GetCurrentStatus().ToString());
+
             return MapResponse(serviceOrder);
         }
 
@@ -121,6 +158,11 @@ namespace OSService.Application.Services
 
             await _repository.SaveChangesAsync();
 
+            await TryPublishNotificationAsync(
+                serviceOrder.CustomerId,
+                serviceOrder.Id,
+                serviceOrder.GetCurrentStatus().ToString());
+
             return MapResponse(serviceOrder);
         }
 
@@ -129,6 +171,20 @@ namespace OSService.Application.Services
             return await _repository.GetByIdAsync(id)
                 ?? throw new KeyNotFoundException(
                     $"Service order {id} was not found.");
+        }
+
+        private async Task TryPublishNotificationAsync(Guid customerId, Guid serviceOrderId, string status)
+        {
+            if (_notificationPublisher == null) return;
+
+            try
+            {
+                await _notificationPublisher.PublishNotificationAsync(customerId, serviceOrderId, status);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to publish notification for ServiceOrder {ServiceOrderId}", serviceOrderId);
+            }
         }
 
         #endregion
