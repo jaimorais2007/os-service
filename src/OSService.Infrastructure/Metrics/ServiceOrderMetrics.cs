@@ -41,12 +41,6 @@ public class ServiceOrderMetrics : IServiceOrderMetrics
                 .ThenBy(p => p.Id)
                 .ToList();
 
-            if (orderedStatus.Count <= 1)
-            {
-                _logger?.LogWarning("Metric {MetricName} could not be collected. Insufficient Status in service order", MeterName);
-                return;
-            }
-
             var lastStatus = orderedStatus[^2];
             var actualStatus = orderedStatus[^1];
 

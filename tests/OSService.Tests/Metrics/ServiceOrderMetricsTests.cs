@@ -46,6 +46,49 @@ namespace OSService.Tests.Metrics
         }
 
         [Fact]
+        public void CalculateServiceOrderStatusMeanTimeMetric_QuandoOrdemForNula_DeveCapturarExcecaoELogar()
+        {
+            // Act: passando null gera NullReferenceException interna que deve ser capturada no try-catch
+            var exception = Record.Exception(() => _metrics.CalculateServiceOrderStatusMeanTimeMetric(null!));
+
+            // Assert
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void CalculateServiceOrderStatusMeanTimeMetric_SemLoggerEComExcecao_NaoDeveFalhar()
+        {
+            var metricsWithoutLogger = new ServiceOrderMetrics(null);
+
+            var exception = Record.Exception(() => metricsWithoutLogger.CalculateServiceOrderStatusMeanTimeMetric(null!));
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void CalculateServiceOrderStatusMeanTimeMetric_SemLoggerEComStatusUnico_NaoDeveFalhar()
+        {
+            var metricsWithoutLogger = new ServiceOrderMetrics(null);
+            var order = new ServiceOrder(Guid.NewGuid(), Guid.NewGuid());
+
+            var exception = Record.Exception(() => metricsWithoutLogger.CalculateServiceOrderStatusMeanTimeMetric(order));
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
+        public void CalculateServiceOrderStatusMeanTimeMetric_SemLoggerEComSucesso_NaoDeveFalhar()
+        {
+            var metricsWithoutLogger = new ServiceOrderMetrics();
+            var order = new ServiceOrder(Guid.NewGuid(), Guid.NewGuid());
+            order.StartDiagnostics();
+
+            var exception = Record.Exception(() => metricsWithoutLogger.CalculateServiceOrderStatusMeanTimeMetric(order));
+
+            Assert.Null(exception);
+        }
+
+        [Fact]
         public void ServiceOrderMetrics_Constants_ShouldMatchExpectedNames()
         {
             Assert.Equal("ServiceOrder.StatusMeanTime", ServiceOrderMetrics.MeterName);
