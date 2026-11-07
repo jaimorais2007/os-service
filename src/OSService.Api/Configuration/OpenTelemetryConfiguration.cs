@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
 using OpenTelemetry;
 using OpenTelemetry.Logs;
@@ -7,6 +8,7 @@ using OpenTelemetry.Trace;
 
 namespace OSService.Api.Configuration;
 
+[ExcludeFromCodeCoverage]
 public static class OpenTelemetryConfiguration
 {
     public static IServiceCollection AddOTelConfiguration(this IServiceCollection services, IConfiguration configuration)
