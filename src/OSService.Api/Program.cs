@@ -1,12 +1,11 @@
+
 using Microsoft.EntityFrameworkCore;
 using OSService.Application.Services;
 using OSService.Domain.Interfaces;
 using OSService.Infrastructure.Contexts;
 using OSService.Infrastructure.Repositories;
 
-
 var builder = WebApplication.CreateBuilder(args);
-
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException("A connection string do PostgreSQL não foi configurada.");
 
@@ -29,6 +28,15 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
+
+// Aplica as migrations pendentes ao iniciar a aplicação
+using (var scope = app.Services.CreateScope())
+{
+    var context = scope.ServiceProvider
+        .GetRequiredService<ServiceOrderDbContext>();
+
+    await context.Database.MigrateAsync();
+}
 
 // Habilita o Swagger em desenvolvimento
 if (app.Environment.IsDevelopment())

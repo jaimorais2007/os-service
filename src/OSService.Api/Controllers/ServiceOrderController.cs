@@ -7,7 +7,7 @@ using OSService.Domain.Exceptions;
 namespace OSService.Api.Controllers
 {
     [ApiController]
-    [Route("api/service-orders")]
+    [Route("api/ServiceOrders")]
     public class ServiceOrderController : ControllerBase
     {
         private readonly ServiceOrderService _serviceOrderService;
