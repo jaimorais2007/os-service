@@ -9,6 +9,7 @@ using OSService.Domain.Interface;
 using OSService.Domain.Interfaces;
 using OSService.Infrastructure.Contexts;
 using OSService.Infrastructure.Messaging;
+using OSService.Infrastructure.Metrics;
 using OSService.Infrastructure.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -30,6 +31,7 @@ if (!string.IsNullOrWhiteSpace(awsRegion))
 }
 
 builder.Services.AddScoped<IServiceOrderNotificationPublisher, SqsServiceOrderNotificationPublisher>();
+builder.Services.AddScoped<IServiceOrderMetrics, ServiceOrderMetrics>();
 builder.Services.AddScoped<ServiceOrderService>();
 
 // Configura OpenTelemetry (traces, metricas e logs) com exportacao OTLP para o New Relic

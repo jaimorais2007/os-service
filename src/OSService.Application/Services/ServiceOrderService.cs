@@ -11,15 +11,18 @@ namespace OSService.Application.Services
         private readonly IServiceOrderRepository _repository;
         private readonly IServiceOrderNotificationPublisher? _notificationPublisher;
         private readonly ILogger<ServiceOrderService>? _logger;
+        private readonly IServiceOrderMetrics? _metrics;
 
         public ServiceOrderService(
             IServiceOrderRepository repository,
             IServiceOrderNotificationPublisher? notificationPublisher = null,
-            ILogger<ServiceOrderService>? logger = null)
+            ILogger<ServiceOrderService>? logger = null,
+            IServiceOrderMetrics? metrics = null)
         {
             _repository = repository;
             _notificationPublisher = notificationPublisher;
             _logger = logger;
+            _metrics = metrics;
         }
 
         public async Task<ServiceOrderGetResponse> CreateAsync(
@@ -90,6 +93,8 @@ namespace OSService.Application.Services
 
             await _repository.SaveChangesAsync();
 
+            TryRecordMetrics(serviceOrder);
+
             await TryPublishNotificationAsync(
                 serviceOrder.CustomerId,
                 serviceOrder.Id,
@@ -110,6 +115,8 @@ namespace OSService.Application.Services
 
             await _repository.SaveChangesAsync();
 
+            TryRecordMetrics(serviceOrder);
+
             await TryPublishNotificationAsync(
                 serviceOrder.CustomerId,
                 serviceOrder.Id,
@@ -125,6 +132,8 @@ namespace OSService.Application.Services
             serviceOrder.Approve();
 
             await _repository.SaveChangesAsync();
+
+            TryRecordMetrics(serviceOrder);
 
             await TryPublishNotificationAsync(
                 serviceOrder.CustomerId,
@@ -142,6 +151,8 @@ namespace OSService.Application.Services
 
             await _repository.SaveChangesAsync();
 
+            TryRecordMetrics(serviceOrder);
+
             await TryPublishNotificationAsync(
                 serviceOrder.CustomerId,
                 serviceOrder.Id,
@@ -158,6 +169,8 @@ namespace OSService.Application.Services
 
             await _repository.SaveChangesAsync();
 
+            TryRecordMetrics(serviceOrder);
+
             await TryPublishNotificationAsync(
                 serviceOrder.CustomerId,
                 serviceOrder.Id,
@@ -171,6 +184,20 @@ namespace OSService.Application.Services
             return await _repository.GetByIdAsync(id)
                 ?? throw new KeyNotFoundException(
                     $"Service order {id} was not found.");
+        }
+
+        private void TryRecordMetrics(ServiceOrder serviceOrder)
+        {
+            if (_metrics == null) return;
+
+            try
+            {
+                _metrics.CalculateServiceOrderStatusMeanTimeMetric(serviceOrder);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to record metrics for ServiceOrder {ServiceOrderId}", serviceOrder.Id);
+            }
         }
 
         private async Task TryPublishNotificationAsync(Guid customerId, Guid serviceOrderId, string status)
