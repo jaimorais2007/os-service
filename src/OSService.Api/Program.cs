@@ -1,5 +1,6 @@
 
 using Microsoft.EntityFrameworkCore;
+using OSService.Api.Configuration;
 using OSService.Application.Services;
 using OSService.Domain.Interfaces;
 using OSService.Infrastructure.Contexts;
@@ -16,6 +17,10 @@ builder.Services.AddDbContext<ServiceOrderDbContext>(options =>
 
 builder.Services.AddScoped<IServiceOrderRepository, ServiceOrderRepository>();
 builder.Services.AddScoped<ServiceOrderService>();
+
+// Configura OpenTelemetry (traces, metricas e logs) com exportacao OTLP para o New Relic
+builder.Services.AddOTelConfiguration(builder.Configuration);
+builder.Logging.AddOTelLogging();
 
 // Registra os controllers da API
 builder.Services.AddControllers();
