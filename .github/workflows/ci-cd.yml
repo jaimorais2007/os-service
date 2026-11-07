@@ -16,7 +16,7 @@ jobs:
     with:
       service-name: os-service
       sonar-project-key: jaimorais2007_os-service
-      # deploy: true   # ativar quando o cluster e o secret KUBE_CONFIG existirem
+      deploy: true
     permissions:
       contents: read
       packages: write
