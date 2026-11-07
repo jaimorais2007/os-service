@@ -1,4 +1,4 @@
-﻿using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging;
 using OSService.Application.Commands;
 using OSService.Domain.Entities;
 using OSService.Domain.Interface;
