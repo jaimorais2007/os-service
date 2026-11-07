@@ -1,4 +1,4 @@
-﻿
+
 using Moq;
 using OSService.Application.Commands;
 using OSService.Application.Services;
@@ -231,6 +231,133 @@ namespace OSService.Tests.Application
             _repositoryMock.Verify(
                 x => x.SaveChangesAsync(),
                 Times.Never);
+        }
+
+        [Fact]
+        public async Task CreateAsync_WhenPublisherConfigured_ShouldPublishStatusNotification()
+        {
+            var publisherMock = new Mock<OSService.Domain.Interface.IServiceOrderNotificationPublisher>();
+            var serviceWithPublisher = new ServiceOrderService(
+                _repositoryMock.Object,
+                publisherMock.Object);
+
+            var customerId = Guid.NewGuid();
+            var request = new ServiceOrderRequest
+            {
+                CustomerId = customerId,
+                VehicleId = Guid.NewGuid()
+            };
+
+            _repositoryMock
+                .Setup(x => x.AddAsync(It.IsAny<ServiceOrder>()))
+                .Returns(Task.CompletedTask);
+
+            var result = await serviceWithPublisher.CreateAsync(request);
+
+            Assert.NotNull(result);
+            publisherMock.Verify(
+                x => x.PublishNotificationAsync(customerId, result.Id, "Received", It.IsAny<CancellationToken>()),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task CreateAsync_WhenPublisherThrows_ShouldNotThrowAndCreateServiceOrder()
+        {
+            var publisherMock = new Mock<OSService.Domain.Interface.IServiceOrderNotificationPublisher>();
+            publisherMock
+                .Setup(x => x.PublishNotificationAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new InvalidOperationException("SQS is down"));
+
+            var serviceWithPublisher = new ServiceOrderService(
+                _repositoryMock.Object,
+                publisherMock.Object);
+
+            var customerId = Guid.NewGuid();
+            var request = new ServiceOrderRequest
+            {
+                CustomerId = customerId,
+                VehicleId = Guid.NewGuid()
+            };
+
+            _repositoryMock
+                .Setup(x => x.AddAsync(It.IsAny<ServiceOrder>()))
+                .Returns(Task.CompletedTask);
+
+            var result = await serviceWithPublisher.CreateAsync(request);
+
+            Assert.NotNull(result);
+            Assert.Equal(OrderStatus.Received, result.Status);
+        }
+
+        [Fact]
+        public async Task StartDiagnosticsAsync_WhenMetricsConfigured_ShouldCallCalculateMetric()
+        {
+            var metricsMock = new Mock<OSService.Domain.Interface.IServiceOrderMetrics>();
+            var serviceWithMetrics = new ServiceOrderService(
+                _repositoryMock.Object,
+                notificationPublisher: null,
+                logger: null,
+                metrics: metricsMock.Object);
+
+            var serviceOrder = CreateServiceOrder();
+            _repositoryMock
+                .Setup(x => x.GetByIdAsync(serviceOrder.Id))
+                .ReturnsAsync(serviceOrder);
+
+            await serviceWithMetrics.StartDiagnosticsAsync(serviceOrder.Id);
+
+            metricsMock.Verify(
+                x => x.CalculateServiceOrderStatusMeanTimeMetric(It.Is<ServiceOrder>(o => o.Id == serviceOrder.Id)),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task FinishAnalysisAsync_WhenMetricsConfigured_ShouldCallCalculateMetric()
+        {
+            var metricsMock = new Mock<OSService.Domain.Interface.IServiceOrderMetrics>();
+            var serviceWithMetrics = new ServiceOrderService(
+                _repositoryMock.Object,
+                notificationPublisher: null,
+                logger: null,
+                metrics: metricsMock.Object);
+
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+
+            _repositoryMock
+                .Setup(x => x.GetByIdAsync(serviceOrder.Id))
+                .ReturnsAsync(serviceOrder);
+
+            await serviceWithMetrics.FinishAnalysisAsync(serviceOrder.Id, new ServiceOrderFinishAnalysisRequest { Budget = 200m });
+
+            metricsMock.Verify(
+                x => x.CalculateServiceOrderStatusMeanTimeMetric(It.Is<ServiceOrder>(o => o.Id == serviceOrder.Id)),
+                Times.Once);
+        }
+
+        [Fact]
+        public async Task StatusChange_WhenMetricsThrows_ShouldNotThrowAndCompleteSuccessfully()
+        {
+            var metricsMock = new Mock<OSService.Domain.Interface.IServiceOrderMetrics>();
+            metricsMock
+                .Setup(x => x.CalculateServiceOrderStatusMeanTimeMetric(It.IsAny<ServiceOrder>()))
+                .Throws(new InvalidOperationException("Metrics pipeline error"));
+
+            var serviceWithMetrics = new ServiceOrderService(
+                _repositoryMock.Object,
+                notificationPublisher: null,
+                logger: null,
+                metrics: metricsMock.Object);
+
+            var serviceOrder = CreateServiceOrder();
+            _repositoryMock
+                .Setup(x => x.GetByIdAsync(serviceOrder.Id))
+                .ReturnsAsync(serviceOrder);
+
+            var result = await serviceWithMetrics.StartDiagnosticsAsync(serviceOrder.Id);
+
+            Assert.NotNull(result);
+            Assert.Equal(OrderStatus.UnderAnalysis, result.Status);
         }
     }
 }

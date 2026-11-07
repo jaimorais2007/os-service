@@ -5,6 +5,7 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using OSService.Infrastructure.Metrics;
 
 namespace OSService.Api.Configuration;
 
@@ -37,6 +38,7 @@ public static class OpenTelemetryConfiguration
             {
                 meterProviderBuilder
                     .AddMeter(serviceName)
+                    .AddMeter(ServiceOrderMetrics.MeterName)
                     .AddAspNetCoreInstrumentation()
                     .AddRuntimeInstrumentation()
                     .AddView(instrument =>
