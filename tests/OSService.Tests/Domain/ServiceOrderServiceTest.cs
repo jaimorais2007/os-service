@@ -1,4 +1,4 @@
-﻿
+
 using Moq;
 using OSService.Application.Commands;
 using OSService.Application.Services;
