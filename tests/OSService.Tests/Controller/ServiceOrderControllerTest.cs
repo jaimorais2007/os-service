@@ -317,6 +317,7 @@ namespace OSService.Tests.Controllers
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis(350m);
             serviceOrder.Approve();
+            serviceOrder.ConfirmPayment("TX-100");
 
             ConfigureServiceOrder(serviceOrder);
 
@@ -333,6 +334,7 @@ namespace OSService.Tests.Controllers
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis(350m);
             serviceOrder.Approve();
+            serviceOrder.ConfirmPayment("TX-100");
 
             ConfigureServiceOrder(serviceOrder);
 
@@ -349,6 +351,7 @@ namespace OSService.Tests.Controllers
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis(350m);
             serviceOrder.Approve();
+            serviceOrder.ConfirmPayment("TX-100");
             serviceOrder.FinishExecution(false);
 
             ConfigureServiceOrder(serviceOrder);

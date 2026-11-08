@@ -98,6 +98,16 @@ spec:
                   name: os-service-secret
                   key: SQS_QUEUE_URL
 
+            - name: AWS__SnsTopicArnPrefix
+              value: "arn:aws:sns:us-east-1:168126498555:oficina"
+
+            - name: AWS__SagaSqsQueueUrl
+              valueFrom:
+                secretKeyRef:
+                  name: os-service-secret
+                  key: SAGA_SQS_QUEUE_URL
+                  optional: true
+
           resources:
             requests:
               cpu: 100m

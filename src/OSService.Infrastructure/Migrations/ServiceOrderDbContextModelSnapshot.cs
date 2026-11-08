@@ -10,8 +10,8 @@ using OSService.Infrastructure.Contexts;
 
 namespace OSService.Infrastructure.Migrations
 {
-    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     [DbContext(typeof(ServiceOrderDbContext))]
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     partial class ServiceOrderDbContextModelSnapshot : ModelSnapshot
     {
         protected override void BuildModel(ModelBuilder modelBuilder)
@@ -22,6 +22,27 @@ namespace OSService.Infrastructure.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("OSService.Domain.Entities.ProcessedSagaEvent", b =>
+                {
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("CorrelationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<DateTime>("ProcessedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("EventId");
+
+                    b.ToTable("ProcessedSagaEvent", (string)null);
+                });
 
             modelBuilder.Entity("OSService.Domain.Entities.ServiceOrder", b =>
                 {
@@ -54,6 +75,10 @@ namespace OSService.Infrastructure.Migrations
                     b.Property<string>("PaymentTransactionId")
                         .HasMaxLength(100)
                         .HasColumnType("character varying(100)");
+
+                    b.Property<string>("PaymentUrl")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
 
                     b.Property<Guid>("VehicleId")
                         .HasColumnType("uuid");

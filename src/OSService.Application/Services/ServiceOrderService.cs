@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging;
 using OSService.Application.Commands;
+using OSService.Application.Saga;
 using OSService.Domain.Entities;
 using OSService.Domain.Enum;
+using OSService.Domain.Exceptions;
 using OSService.Domain.Interface;
 using OSService.Domain.Interfaces;
 
@@ -13,17 +15,20 @@ namespace OSService.Application.Services
         private readonly IServiceOrderNotificationPublisher? _notificationPublisher;
         private readonly ILogger<ServiceOrderService>? _logger;
         private readonly IServiceOrderMetrics? _metrics;
+        private readonly ISagaEventPublisher? _sagaEventPublisher;
 
         public ServiceOrderService(
             IServiceOrderRepository repository,
             IServiceOrderNotificationPublisher? notificationPublisher = null,
             ILogger<ServiceOrderService>? logger = null,
-            IServiceOrderMetrics? metrics = null)
+            IServiceOrderMetrics? metrics = null,
+            ISagaEventPublisher? sagaEventPublisher = null)
         {
             _repository = repository;
             _notificationPublisher = notificationPublisher;
             _logger = logger;
             _metrics = metrics;
+            _sagaEventPublisher = sagaEventPublisher;
         }
 
         public async Task<ServiceOrderGetResponse> CreateAsync(
@@ -259,6 +264,40 @@ namespace OSService.Application.Services
 
             await _repository.SaveChangesAsync();
 
+            if (_sagaEventPublisher != null)
+            {
+                try
+                {
+                    var totalAmount = serviceOrder.Budget > 0
+                        ? serviceOrder.Budget
+                        : serviceOrder.CalculateBudget();
+
+                    var payload = new BudgetApprovedPayload(
+                        serviceOrder.Id,
+                        totalAmount,
+                        serviceOrder.Services.Select(s => s.ServiceId).ToList(),
+                        serviceOrder.Parts.Select(p => new BudgetApprovedPart(p.PartId, p.Quantity)).ToList());
+
+                    await _sagaEventPublisher.PublishAsync(
+                        SagaEventTypes.BudgetApproved,
+                        serviceOrder.Id,
+                        payload);
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogError(
+                        ex,
+                        "Failed to publish BudgetApproved event for ServiceOrder {ServiceOrderId}. Reverting approval.",
+                        serviceOrder.Id);
+
+                    serviceOrder.RevertToAwaitingApproval();
+                    await _repository.SaveChangesAsync();
+
+                    throw new DomainException(
+                        "Failed to initiate payment generation for the approved service order. Approval was reverted.");
+                }
+            }
+
             TryRecordMetrics(serviceOrder);
 
             await TryPublishNotificationAsync(
@@ -273,9 +312,29 @@ namespace OSService.Application.Services
         {
             var serviceOrder = await FindEntityAsync(id);
 
+            var previousStatus = serviceOrder.GetCurrentStatus();
+
             serviceOrder.Reject();
 
             await _repository.SaveChangesAsync();
+
+            if (previousStatus == OrderStatus.WaitingPayment && _sagaEventPublisher != null)
+            {
+                try
+                {
+                    await _sagaEventPublisher.PublishAsync(
+                        SagaEventTypes.ServiceOrderRejected,
+                        serviceOrder.Id,
+                        new ServiceOrderRejectedPayload(serviceOrder.Id));
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(
+                        ex,
+                        "Failed to publish ServiceOrderRejected event for ServiceOrder {ServiceOrderId}",
+                        serviceOrder.Id);
+                }
+            }
 
             TryRecordMetrics(serviceOrder);
 
@@ -298,6 +357,19 @@ namespace OSService.Application.Services
             serviceOrder.ReceivePayment(request?.Amount, request?.TransactionId);
 
             await _repository.SaveChangesAsync();
+
+            if (previousStatus == OrderStatus.WaitingPayment &&
+                serviceOrder.Parts.Count > 0 &&
+                serviceOrder.Parts.Any(p => !p.StockQuantityWasEnsured) &&
+                _sagaEventPublisher != null)
+            {
+                await _sagaEventPublisher.PublishAsync(
+                    SagaEventTypes.ServiceOrderApproved,
+                    serviceOrder.Id,
+                    new ServiceOrderApprovedPayload(
+                        serviceOrder.Id,
+                        serviceOrder.Parts.Select(p => new ServiceOrderApprovedPart(p.PartId, p.Quantity)).ToList()));
+            }
 
             if (serviceOrder.GetCurrentStatus() != previousStatus)
             {
@@ -408,6 +480,7 @@ namespace OSService.Application.Services
                 PaidAt = serviceOrder.PaidAt,
                 PaidAmount = serviceOrder.PaidAmount,
                 PaymentTransactionId = serviceOrder.PaymentTransactionId,
+                PaymentUrl = serviceOrder.PaymentUrl,
                 Parts = serviceOrder.Parts.Select(p => new ServiceOrderPartResponse
                 {
                     Id = p.Id,

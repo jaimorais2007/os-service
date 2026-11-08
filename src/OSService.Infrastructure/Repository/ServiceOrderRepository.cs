@@ -59,6 +59,22 @@ namespace OSService.Infrastructure.Repositories
             return await GetAllAsync(status);
         }
 
+        public async Task<bool> IsEventProcessedAsync(
+            Guid eventId,
+            CancellationToken cancellationToken = default)
+        {
+            return await _context.ProcessedSagaEvents
+                .AsNoTracking()
+                .AnyAsync(x => x.EventId == eventId, cancellationToken);
+        }
+
+        public async Task AddProcessedEventAsync(
+            ProcessedSagaEvent processedEvent,
+            CancellationToken cancellationToken = default)
+        {
+            await _context.ProcessedSagaEvents.AddAsync(processedEvent, cancellationToken);
+        }
+
         public async Task SaveChangesAsync()
         {
             await _context.SaveChangesAsync();

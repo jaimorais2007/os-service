@@ -26,6 +26,8 @@ namespace OSService.Application.Commands
 
         public string? PaymentTransactionId { get; set; }
 
+        public string? PaymentUrl { get; set; }
+
         public List<ServiceOrderPartResponse> Parts { get; set; } = new();
 
         public List<ServiceOrderServiceResponse> Services { get; set; } = new();

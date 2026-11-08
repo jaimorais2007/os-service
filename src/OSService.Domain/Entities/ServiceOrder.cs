@@ -25,6 +25,8 @@ namespace OSService.Domain.Entities
 
         public string? PaymentTransactionId { get; private set; }
 
+        public string? PaymentUrl { get; private set; }
+
         public ICollection<ServiceOrderStatus> StatusHistory { get; private set; } = new List<ServiceOrderStatus>();
 
         public ICollection<ServiceOrderPart> Parts { get; private set; } = new List<ServiceOrderPart>();
@@ -132,16 +134,100 @@ namespace OSService.Domain.Entities
                 OrderStatus.AwaitingApproval,
                 "Service order must be in 'Awaiting Approval' status to be approved.");
 
-            ChangeStatus(OrderStatus.InProgress);
+            IsPaid = false;
+            PaidAt = null;
+            PaidAmount = null;
+            PaymentUrl = null;
+            PaymentTransactionId = null;
+
+            foreach (var part in Parts)
+            {
+                part.ResetStockEnsured();
+            }
+
+            ChangeStatus(OrderStatus.WaitingPayment);
         }
 
         public void Reject()
         {
-            ValidateStatus(
-                OrderStatus.AwaitingApproval,
-                "Service order must be in 'Awaiting Approval' status to be rejected.");
+            var currentStatus = GetCurrentStatus();
+            if (currentStatus != OrderStatus.AwaitingApproval && currentStatus != OrderStatus.WaitingPayment)
+            {
+                throw new DomainException(
+                    "Service order must be in 'Awaiting Approval' or 'Waiting Payment' status to be rejected.");
+            }
+
+            PaymentUrl = null;
 
             ChangeStatus(OrderStatus.Rejected);
+        }
+
+        public void RegisterPaymentCreated(string? paymentUrl, string? transactionId)
+        {
+            if (!string.IsNullOrWhiteSpace(paymentUrl))
+                PaymentUrl = paymentUrl;
+
+            if (!string.IsNullOrWhiteSpace(transactionId))
+                PaymentTransactionId = transactionId;
+        }
+
+        public void ConfirmPayment(string? transactionId, decimal? amount = null)
+        {
+            if (Inactive)
+                throw new DomainException("Cannot confirm payment for an inactive service order.");
+
+            var status = GetCurrentStatus();
+            if (status == OrderStatus.Rejected)
+                throw new DomainException("Cannot confirm payment for a rejected service order.");
+
+            IsPaid = true;
+            PaidAt ??= DateTime.UtcNow;
+            PaidAmount = amount ?? PaidAmount ?? (Budget > 0 ? Budget : CalculateBudget());
+
+            if (!string.IsNullOrWhiteSpace(transactionId))
+                PaymentTransactionId = transactionId;
+
+            if (status == OrderStatus.WaitingPayment &&
+                (Parts.Count == 0 || Parts.All(p => p.StockQuantityWasEnsured)))
+            {
+                ChangeStatus(OrderStatus.InProgress);
+            }
+        }
+
+        public void ConfirmPartStockEnsured(Guid partId)
+        {
+            var part = Parts.FirstOrDefault(p => p.PartId == partId || p.Id == partId);
+            if (part == null)
+                return;
+
+            part.EnsureStock();
+
+            if (IsPaid &&
+                GetCurrentStatus() == OrderStatus.WaitingPayment &&
+                Parts.All(p => p.StockQuantityWasEnsured))
+            {
+                ChangeStatus(OrderStatus.InProgress);
+            }
+        }
+
+        public void RevertToAwaitingApproval()
+        {
+            var currentStatus = GetCurrentStatus();
+            if (currentStatus != OrderStatus.WaitingPayment && currentStatus != OrderStatus.InProgress)
+                return;
+
+            IsPaid = false;
+            PaidAt = null;
+            PaidAmount = null;
+            PaymentUrl = null;
+            PaymentTransactionId = null;
+
+            foreach (var part in Parts)
+            {
+                part.ResetStockEnsured();
+            }
+
+            ChangeStatus(OrderStatus.AwaitingApproval);
         }
 
         public void ReceivePayment(decimal? amount = null, string? transactionId = null)
@@ -165,9 +251,10 @@ namespace OSService.Domain.Entities
             IsPaid = true;
             PaidAt = DateTime.UtcNow;
             PaidAmount = amount ?? (Budget > 0 ? Budget : CalculateBudget());
-            PaymentTransactionId = transactionId ?? Guid.NewGuid().ToString();
+            PaymentTransactionId = transactionId ?? PaymentTransactionId ?? Guid.NewGuid().ToString();
 
-            if (status == OrderStatus.AwaitingApproval)
+            if (status == OrderStatus.AwaitingApproval ||
+                (status == OrderStatus.WaitingPayment && (Parts.Count == 0 || Parts.All(p => p.StockQuantityWasEnsured))))
             {
                 ChangeStatus(OrderStatus.InProgress);
             }
@@ -178,7 +265,7 @@ namespace OSService.Domain.Entities
             int quantity,
             decimal unitPrice = 0,
             string? partName = null,
-            bool stockQuantityWasEnsured = true)
+            bool stockQuantityWasEnsured = false)
         {
             ValidateCanModifyItems("Cannot add parts in the current service order status.");
 

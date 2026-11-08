@@ -32,7 +32,7 @@ namespace OSService.Domain.Entities
             int quantity,
             decimal unitPrice = 0,
             string? partName = null,
-            bool stockQuantityWasEnsured = true)
+            bool stockQuantityWasEnsured = false)
         {
             if (partId == Guid.Empty)
                 throw new DomainException("Part must be provided.");
@@ -71,6 +71,11 @@ namespace OSService.Domain.Entities
         public void EnsureStock()
         {
             StockQuantityWasEnsured = true;
+        }
+
+        public void ResetStockEnsured()
+        {
+            StockQuantityWasEnsured = false;
         }
     }
 }

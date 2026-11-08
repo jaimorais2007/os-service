@@ -45,6 +45,10 @@ namespace OSService.Infrastructure.Mappings
                 .HasMaxLength(100)
                 .IsRequired(false);
 
+            builder.Property(x => x.PaymentUrl)
+                .HasMaxLength(500)
+                .IsRequired(false);
+
             builder.HasMany(x => x.StatusHistory)
                 .WithOne(x => x.ServiceOrder)
                 .HasForeignKey(x => x.ServiceOrderId)

@@ -19,6 +19,8 @@ namespace OSService.Infrastructure.Contexts
 
         public DbSet<ServiceOrderServiceItem> ServiceOrderServices { get; set; }
 
+        public DbSet<ProcessedSagaEvent> ProcessedSagaEvents { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.ApplyConfigurationsFromAssembly(

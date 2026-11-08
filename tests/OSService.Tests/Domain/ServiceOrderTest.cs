@@ -58,7 +58,7 @@ namespace OSService.Tests.Domain
         }
 
         [Fact]
-        public void Approve_ShouldChangeStatusToInProgress()
+        public void Approve_ShouldChangeStatusToWaitingPayment()
         {
             var serviceOrder = CreateServiceOrder();
             serviceOrder.StartDiagnostics();
@@ -67,7 +67,7 @@ namespace OSService.Tests.Domain
             serviceOrder.Approve();
 
             Assert.Equal(
-                OrderStatus.InProgress,
+                OrderStatus.WaitingPayment,
                 serviceOrder.GetCurrentStatus());
         }
 
@@ -124,6 +124,7 @@ namespace OSService.Tests.Domain
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis(350m);
             serviceOrder.Approve();
+            serviceOrder.ConfirmPayment("TX-100");
 
             Assert.Throws<DomainException>(
                 () => serviceOrder.FinishExecution(true));
@@ -136,6 +137,7 @@ namespace OSService.Tests.Domain
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis(350m);
             serviceOrder.Approve();
+            serviceOrder.ConfirmPayment("TX-100");
 
             serviceOrder.FinishExecution(false);
 
@@ -151,6 +153,7 @@ namespace OSService.Tests.Domain
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis(350m);
             serviceOrder.Approve();
+            serviceOrder.ConfirmPayment("TX-100");
             serviceOrder.FinishExecution(false);
 
             serviceOrder.Deliver();
@@ -174,7 +177,7 @@ namespace OSService.Tests.Domain
             Assert.Equal(2, part.Quantity);
             Assert.Equal(50m, part.UnitPrice);
             Assert.Equal(100m, part.TotalPrice);
-            Assert.True(part.StockQuantityWasEnsured);
+            Assert.False(part.StockQuantityWasEnsured);
         }
 
         [Fact]
@@ -380,14 +383,85 @@ namespace OSService.Tests.Domain
             serviceOrder.AddPart(partId, 1, 50m, "Brake Pad", stockQuantityWasEnsured: false);
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis(100m);
-            serviceOrder.Approve();
+            serviceOrder.ReceivePayment(100m, "TX-DIRECT");
 
+            Assert.Equal(OrderStatus.InProgress, serviceOrder.GetCurrentStatus());
             Assert.Throws<DomainException>(() => serviceOrder.FinishExecution(false));
 
             serviceOrder.EnsurePartStock(partId);
             serviceOrder.FinishExecution(false);
 
             Assert.Equal(OrderStatus.Completed, serviceOrder.GetCurrentStatus());
+        }
+
+        [Fact]
+        public void Reject_WhenWaitingPayment_ShouldChangeStatusToRejectedAndClearPaymentUrl()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(350m);
+            serviceOrder.Approve();
+            serviceOrder.RegisterPaymentCreated("https://mp/checkout", "PREF-1");
+
+            serviceOrder.Reject();
+
+            Assert.Equal(OrderStatus.Rejected, serviceOrder.GetCurrentStatus());
+            Assert.Null(serviceOrder.PaymentUrl);
+        }
+
+        [Fact]
+        public void ConfirmPayment_WithParts_ShouldWaitForAllPartStocksBeforeInProgress()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var part1 = Guid.NewGuid();
+            var part2 = Guid.NewGuid();
+            serviceOrder.AddPart(part1, 1, 100m, "Part 1");
+            serviceOrder.AddPart(part2, 2, 50m, "Part 2");
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis();
+            serviceOrder.Approve();
+            serviceOrder.RegisterPaymentCreated("https://mp/checkout", "PREF-99");
+
+            serviceOrder.ConfirmPayment("PREF-99");
+
+            Assert.True(serviceOrder.IsPaid);
+            Assert.Equal(OrderStatus.WaitingPayment, serviceOrder.GetCurrentStatus());
+
+            serviceOrder.ConfirmPartStockEnsured(part1);
+            Assert.Equal(OrderStatus.WaitingPayment, serviceOrder.GetCurrentStatus());
+
+            serviceOrder.ConfirmPartStockEnsured(part2);
+            Assert.Equal(OrderStatus.InProgress, serviceOrder.GetCurrentStatus());
+        }
+
+        [Fact]
+        public void RevertToAwaitingApproval_ShouldClearPaymentAndResetParts()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var partId = Guid.NewGuid();
+            serviceOrder.AddPart(partId, 1, 100m, "Clutch");
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(250m);
+            serviceOrder.Approve();
+            serviceOrder.RegisterPaymentCreated("https://mp/checkout", "PREF-77");
+            serviceOrder.ConfirmPayment("PREF-77");
+
+            serviceOrder.RevertToAwaitingApproval();
+
+            Assert.Equal(OrderStatus.AwaitingApproval, serviceOrder.GetCurrentStatus());
+            Assert.False(serviceOrder.IsPaid);
+            Assert.Null(serviceOrder.PaidAt);
+            Assert.Null(serviceOrder.PaidAmount);
+            Assert.Null(serviceOrder.PaymentUrl);
+            Assert.Null(serviceOrder.PaymentTransactionId);
+            Assert.All(serviceOrder.Parts, p => Assert.False(p.StockQuantityWasEnsured));
+        }
+
+        [Fact]
+        public void ProcessedSagaEvent_WithInvalidParameters_ShouldThrowDomainException()
+        {
+            Assert.Throws<DomainException>(() => new ProcessedSagaEvent(Guid.Empty, "PaymentConfirmed", Guid.NewGuid()));
+            Assert.Throws<DomainException>(() => new ProcessedSagaEvent(Guid.NewGuid(), "", Guid.NewGuid()));
         }
     }
 }

@@ -10,6 +10,6 @@ namespace OSService.Application.Commands
 
         public decimal UnitPrice { get; set; }
 
-        public bool StockQuantityWasEnsured { get; set; } = true;
+        public bool StockQuantityWasEnsured { get; set; } = false;
     }
 }

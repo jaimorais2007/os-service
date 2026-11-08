@@ -15,6 +15,10 @@ namespace OSService.Domain.Interfaces
 
         Task<List<ServiceOrder>> GetByStatusAsync(OrderStatus status);
 
+        Task<bool> IsEventProcessedAsync(Guid eventId, CancellationToken cancellationToken = default);
+
+        Task AddProcessedEventAsync(ProcessedSagaEvent processedEvent, CancellationToken cancellationToken = default);
+
         Task SaveChangesAsync();
     }
 }

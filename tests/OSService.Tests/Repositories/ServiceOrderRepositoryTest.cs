@@ -263,6 +263,29 @@ namespace OSService.Tests.Repositories
             }
         }
 
+        [Fact]
+        public async Task ProcessedSagaEvents_ShouldPersistAndCheckIdempotency()
+        {
+            var eventId = Guid.NewGuid();
+            var correlationId = Guid.NewGuid();
+
+            await using (var context = CreateContext())
+            {
+                var repository = new ServiceOrderRepository(context);
+                Assert.False(await repository.IsEventProcessedAsync(eventId));
+
+                await repository.AddProcessedEventAsync(
+                    new ProcessedSagaEvent(eventId, "PaymentConfirmed", correlationId));
+                await repository.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext())
+            {
+                var repository = new ServiceOrderRepository(context);
+                Assert.True(await repository.IsEventProcessedAsync(eventId));
+            }
+        }
+
         public void Dispose()
         {
             _connection.Dispose();

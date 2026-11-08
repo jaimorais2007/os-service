@@ -1,7 +1,7 @@
-Feature: Complete Service Order Lifecycle Management (OS Service)
+Feature: Complete Service Order Lifecycle Management and Choreographed Saga (OS Service)
   As a mechanical workshop operating in a microservices architecture
-  I want to manage the entire lifecycle of a Service Order from creation to delivery or rejection
-  So that status consistency, metrics calculation, persistence, and event notifications are guaranteed
+  I want to manage the entire lifecycle of a Service Order including Choreographed Saga payment and stock events
+  So that status consistency, compensating transactions, metrics calculation, persistence, and notifications are guaranteed
 
   Scenario: Complete flow of an approved Service Order until vehicle delivery
     Given a valid customer and their vehicle are registered for opening a Service Order
@@ -16,6 +16,10 @@ Feature: Complete Service Order Lifecycle Management (OS Service)
     And the budget recorded on the Service Order should be 450.00
     And a status change notification for "AwaitingApproval" should have been published
     When the customer approves the Service Order budget
+    Then the Service Order status should be updated to "WaitingPayment"
+    And a status change notification for "WaitingPayment" should have been published
+    And the Saga event "BudgetApproved" should have been published
+    When the Saga receives a "PaymentConfirmed" event with transaction "MP-TX-450"
     Then the Service Order status should be updated to "InProgress"
     And a status change notification for "InProgress" should have been published
     When the mechanic finishes the service execution with no pending parts
@@ -24,8 +28,8 @@ Feature: Complete Service Order Lifecycle Management (OS Service)
     When the vehicle is delivered to the customer
     Then the Service Order status should be updated to "Delivered"
     And a status change notification for "Delivered" should have been published
-    And the Service Order status history in the database should contain 6 status records
-    And the status mean time metrics should have been recorded 5 times
+    And the Service Order status history in the database should contain 7 status records
+    And the status mean time metrics should have been recorded 6 times
 
   Scenario: Complete flow of a Service Order with budget rejected by the customer
     Given a valid customer and their vehicle are registered for opening a Service Order
@@ -46,7 +50,7 @@ Feature: Complete Service Order Lifecycle Management (OS Service)
     When the mechanic finishes the service execution with no pending parts
     And the vehicle is delivered to the customer
     Then the Service Order status should be updated to "Delivered"
-    And the Service Order status history in the database should contain 6 status records
+    And the Service Order status history in the database should contain 7 status records
 
   Scenario: Blocking invalid status transition when attempting to deliver a vehicle before service completion
     Given a valid customer and their vehicle are registered for opening a Service Order
@@ -75,3 +79,56 @@ Feature: Complete Service Order Lifecycle Management (OS Service)
     When payment of 500.00 is received for the Service Order
     Then the Service Order status should be updated to "InProgress"
     And the Service Order should be marked as paid
+
+  Scenario: Choreographed Saga happy path with part stock reservation after payment
+    Given a valid customer and their vehicle are registered for opening a Service Order
+    When a new Service Order is opened for the customer and vehicle
+    And the mechanic starts diagnostics on the Service Order
+    And a part with price 150.00 and quantity 2 is added to the Service Order
+    And the mechanic finishes the technical analysis with calculated budget
+    And the customer approves the Service Order budget
+    Then the Service Order status should be updated to "WaitingPayment"
+    And the Saga event "BudgetApproved" should have been published
+    When the Saga receives a "PaymentCreated" event with URL "https://mp/checkout/999" and transaction "PREF-999"
+    And the Saga receives a "PaymentConfirmed" event with transaction "PREF-999"
+    Then the Service Order should be marked as paid
+    And the Service Order status should remain "WaitingPayment"
+    And the Saga event "ServiceOrderApproved" should have been published
+    When the Saga receives a "PartStockEnsured" event for all parts in the Service Order
+    Then the Service Order status should be updated to "InProgress"
+
+  Scenario: Choreographed Saga Compensation 1 when payment creation fails in Billing
+    Given a valid customer and their vehicle are registered for opening a Service Order
+    When a new Service Order is opened for the customer and vehicle
+    And the mechanic starts diagnostics on the Service Order
+    And the mechanic finishes the technical analysis with a budget of 400.00
+    And the customer approves the Service Order budget
+    Then the Service Order status should be updated to "WaitingPayment"
+    When the Saga receives a "PaymentCreationFailed" event with reason "Mercado Pago gateway timeout"
+    Then the Service Order status should be updated to "AwaitingApproval"
+    And the Service Order should not be marked as paid
+
+  Scenario: Choreographed Saga Compensation 2 when part stock is insufficient after payment
+    Given a valid customer and their vehicle are registered for opening a Service Order
+    When a new Service Order is opened for the customer and vehicle
+    And the mechanic starts diagnostics on the Service Order
+    And a part with price 220.00 and quantity 3 is added to the Service Order
+    And the mechanic finishes the technical analysis with calculated budget
+    And the customer approves the Service Order budget
+    And the Saga receives a "PaymentConfirmed" event with transaction "PREF-OUT-OF-STOCK"
+    Then the Service Order should be marked as paid
+    And the Saga event "ServiceOrderApproved" should have been published
+    When the Saga receives a "PaymentRefunded" event with transaction "PREF-OUT-OF-STOCK" and reason "Insufficient part stock"
+    Then the Service Order status should be updated to "AwaitingApproval"
+    And the Service Order should not be marked as paid
+
+  Scenario: Rejecting Service Order during WaitingPayment publishes ServiceOrderRejected
+    Given a valid customer and their vehicle are registered for opening a Service Order
+    When a new Service Order is opened for the customer and vehicle
+    And the mechanic starts diagnostics on the Service Order
+    And the mechanic finishes the technical analysis with a budget of 650.00
+    And the customer approves the Service Order budget
+    Then the Service Order status should be updated to "WaitingPayment"
+    When the customer rejects the Service Order budget
+    Then the Service Order status should be updated to "Rejected"
+    And the Saga event "ServiceOrderRejected" should have been published
