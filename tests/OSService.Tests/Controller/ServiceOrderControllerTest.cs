@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Moq;
 using OSService.Api.Controllers;
 using OSService.Application.Commands;
@@ -305,6 +305,38 @@ namespace OSService.Tests.Controllers
             ConfigureServiceOrder(serviceOrder);
 
             var result = await _controller.Reject(serviceOrder.Id);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task FinishExecution_ShouldReturnOk()
+        {
+            var serviceOrder = CreateServiceOrder();
+
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(350m);
+            serviceOrder.Approve();
+
+            ConfigureServiceOrder(serviceOrder);
+
+            var result = await _controller.FinishExecution(serviceOrder.Id, false);
+
+            Assert.IsType<OkObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task FinishExecution_WithPendingParts_ShouldReturnBadRequest()
+        {
+            var serviceOrder = CreateServiceOrder();
+
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(350m);
+            serviceOrder.Approve();
+
+            ConfigureServiceOrder(serviceOrder);
+
+            var result = await _controller.FinishExecution(serviceOrder.Id, true);
 
             Assert.IsType<BadRequestObjectResult>(result);
         }

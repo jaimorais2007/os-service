@@ -1,9 +1,15 @@
 
+using Amazon;
+using Amazon.SQS;
 using Microsoft.EntityFrameworkCore;
 using OSService.Api.Configuration;
+using OSService.Api.Filters;
 using OSService.Application.Services;
+using OSService.Domain.Interface;
 using OSService.Domain.Interfaces;
 using OSService.Infrastructure.Contexts;
+using OSService.Infrastructure.Messaging;
+using OSService.Infrastructure.Metrics;
 using OSService.Infrastructure.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,14 +22,27 @@ builder.Services.AddDbContext<ServiceOrderDbContext>(options =>
 });
 
 builder.Services.AddScoped<IServiceOrderRepository, ServiceOrderRepository>();
+
+var awsRegion = builder.Configuration["AWS:Region"];
+if (!string.IsNullOrWhiteSpace(awsRegion))
+{
+    var region = RegionEndpoint.GetBySystemName(awsRegion);
+    builder.Services.AddSingleton<IAmazonSQS>(_ => new AmazonSQSClient(region));
+}
+
+builder.Services.AddScoped<IServiceOrderNotificationPublisher, SqsServiceOrderNotificationPublisher>();
+builder.Services.AddScoped<IServiceOrderMetrics, ServiceOrderMetrics>();
 builder.Services.AddScoped<ServiceOrderService>();
 
 // Configura OpenTelemetry (traces, metricas e logs) com exportacao OTLP para o New Relic
 builder.Services.AddOTelConfiguration(builder.Configuration);
 builder.Logging.AddOTelLogging();
 
-// Registra os controllers da API
-builder.Services.AddControllers();
+// Registra os controllers da API com filtro global de exceções
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<GlobalExceptionFilter>();
+});
 
 // Registra os Health Checks
 builder.Services.AddHealthChecks();
