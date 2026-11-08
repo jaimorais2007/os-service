@@ -377,5 +377,222 @@ namespace OSService.Tests.Controllers
 
             Assert.IsType<NotFoundObjectResult>(result);
         }
+
+        [Fact]
+        public async Task GetByStatus_ShouldReturnOk()
+        {
+            var serviceOrder = CreateServiceOrder();
+            _repositoryMock
+                .Setup(x => x.GetByStatusAsync(OSService.Domain.Enum.OrderStatus.Received))
+                .ReturnsAsync(new List<ServiceOrder> { serviceOrder });
+
+            var result = await _controller.GetByStatus(OSService.Domain.Enum.OrderStatus.Received);
+
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            var response = Assert.IsType<List<ServiceOrderGetResponse>>(okResult.Value);
+            Assert.Single(response);
+        }
+
+        [Fact]
+        public async Task GetAll_WithStatus_ShouldReturnOk()
+        {
+            var serviceOrder = CreateServiceOrder();
+            _repositoryMock
+                .Setup(x => x.GetAllAsync(OSService.Domain.Enum.OrderStatus.Received))
+                .ReturnsAsync(new List<ServiceOrder> { serviceOrder });
+
+            var result = await _controller.GetAll(OSService.Domain.Enum.OrderStatus.Received);
+
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            var response = Assert.IsType<List<ServiceOrderGetResponse>>(okResult.Value);
+            Assert.Single(response);
+        }
+
+        [Fact]
+        public async Task AddPart_ShouldReturnOk()
+        {
+            var serviceOrder = CreateServiceOrder();
+            ConfigureServiceOrder(serviceOrder);
+
+            var request = new ServiceOrderAddPartRequest
+            {
+                PartId = Guid.NewGuid(),
+                PartName = "Brake Disc",
+                Quantity = 2,
+                UnitPrice = 120m
+            };
+
+            var result = await _controller.AddPart(serviceOrder.Id, request);
+
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            var response = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+            Assert.Single(response.Parts);
+            Assert.Equal(240m, response.Parts.First().TotalPrice);
+        }
+
+        [Fact]
+        public async Task AddPart_WhenInvalidStatus_ShouldReturnBadRequest()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(100m);
+            serviceOrder.Approve();
+            ConfigureServiceOrder(serviceOrder);
+
+            var request = new ServiceOrderAddPartRequest
+            {
+                PartId = Guid.NewGuid(),
+                Quantity = 1,
+                UnitPrice = 50m
+            };
+
+            var result = await _controller.AddPart(serviceOrder.Id, request);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task RemovePart_ShouldReturnOk()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var partId = Guid.NewGuid();
+            serviceOrder.AddPart(partId, 1, 50m);
+            ConfigureServiceOrder(serviceOrder);
+
+            var result = await _controller.RemovePart(serviceOrder.Id, partId);
+
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            var response = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+            Assert.Empty(response.Parts);
+        }
+
+        [Fact]
+        public async Task RemovePart_WhenNotFound_ShouldReturnBadRequest()
+        {
+            var serviceOrder = CreateServiceOrder();
+            ConfigureServiceOrder(serviceOrder);
+
+            var result = await _controller.RemovePart(serviceOrder.Id, Guid.NewGuid());
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task AddService_ShouldReturnOk()
+        {
+            var serviceOrder = CreateServiceOrder();
+            ConfigureServiceOrder(serviceOrder);
+
+            var request = new ServiceOrderAddServiceRequest
+            {
+                ServiceId = Guid.NewGuid(),
+                ServiceName = "General Maintenance",
+                Price = 300m
+            };
+
+            var result = await _controller.AddService(serviceOrder.Id, request);
+
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            var response = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+            Assert.Single(response.Services);
+            Assert.Equal(300m, response.Services.First().Price);
+        }
+
+        [Fact]
+        public async Task AddService_WhenDuplicate_ShouldReturnBadRequest()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var serviceId = Guid.NewGuid();
+            serviceOrder.AddService(serviceId, 100m);
+            ConfigureServiceOrder(serviceOrder);
+
+            var request = new ServiceOrderAddServiceRequest
+            {
+                ServiceId = serviceId,
+                Price = 120m
+            };
+
+            var result = await _controller.AddService(serviceOrder.Id, request);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task RemoveService_ShouldReturnOk()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var serviceId = Guid.NewGuid();
+            serviceOrder.AddService(serviceId, 100m);
+            ConfigureServiceOrder(serviceOrder);
+
+            var result = await _controller.RemoveService(serviceOrder.Id, serviceId);
+
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            var response = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+            Assert.Empty(response.Services);
+        }
+
+        [Fact]
+        public async Task RemoveService_WhenNotFound_ShouldReturnBadRequest()
+        {
+            var serviceOrder = CreateServiceOrder();
+            ConfigureServiceOrder(serviceOrder);
+
+            var result = await _controller.RemoveService(serviceOrder.Id, Guid.NewGuid());
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
+
+        [Fact]
+        public async Task CreateBudget_ShouldReturnOk()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.AddPart(Guid.NewGuid(), 2, 50m);
+            serviceOrder.AddService(Guid.NewGuid(), 100m);
+            ConfigureServiceOrder(serviceOrder);
+
+            var result = await _controller.CreateBudget(serviceOrder.Id, new ServiceOrderCreateBudgetRequest());
+
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            var response = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+            Assert.Equal(200m, response.Budget);
+        }
+
+        [Fact]
+        public async Task ReceivePayment_ShouldReturnOk()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(250m);
+            ConfigureServiceOrder(serviceOrder);
+
+            var request = new ServiceOrderPaymentRequest
+            {
+                Amount = 250m,
+                TransactionId = "PAY-54321"
+            };
+
+            var result = await _controller.ReceivePayment(serviceOrder.Id, request);
+
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            var response = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+            Assert.True(response.IsPaid);
+            Assert.Equal(250m, response.PaidAmount);
+            Assert.Equal(OSService.Domain.Enum.OrderStatus.InProgress, response.Status);
+        }
+
+        [Fact]
+        public async Task ReceivePayment_WhenInvalid_ShouldReturnBadRequest()
+        {
+            var serviceOrder = CreateServiceOrder();
+            ConfigureServiceOrder(serviceOrder);
+
+            var request = new ServiceOrderPaymentRequest { Amount = 100m };
+
+            var result = await _controller.ReceivePayment(serviceOrder.Id, request);
+
+            Assert.IsType<BadRequestObjectResult>(result);
+        }
     }
 }

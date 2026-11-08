@@ -1,4 +1,5 @@
-﻿using OSService.Domain.Entities;
+using OSService.Domain.Entities;
+using OSService.Domain.Enum;
 
 namespace OSService.Domain.Interfaces
 {
@@ -9,6 +10,10 @@ namespace OSService.Domain.Interfaces
         Task<ServiceOrder?> GetByIdAsync(Guid id);
 
         Task<List<ServiceOrder>> GetAllAsync();
+
+        Task<List<ServiceOrder>> GetAllAsync(OrderStatus? status);
+
+        Task<List<ServiceOrder>> GetByStatusAsync(OrderStatus status);
 
         Task SaveChangesAsync();
     }

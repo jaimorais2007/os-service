@@ -14,7 +14,10 @@ using OSService.Infrastructure.Repositories;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException("A connection string do PostgreSQL não foi configurada.");
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? (builder.Environment.IsProduction()
+        ? throw new InvalidOperationException("A connection string do PostgreSQL não foi configurada.")
+        : "Host=localhost;Database=osservice;Username=postgres;Password=postgres");
 
 builder.Services.AddDbContext<ServiceOrderDbContext>(options =>
 {

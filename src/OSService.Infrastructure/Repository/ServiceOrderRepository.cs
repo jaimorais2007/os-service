@@ -1,6 +1,6 @@
-﻿
 using Microsoft.EntityFrameworkCore;
 using OSService.Domain.Entities;
+using OSService.Domain.Enum;
 using OSService.Domain.Interfaces;
 using OSService.Infrastructure.Contexts;
 
@@ -24,16 +24,39 @@ namespace OSService.Infrastructure.Repositories
         {
             return await _context.ServiceOrders
                 .Include(x => x.StatusHistory)
+                .Include(x => x.Parts)
+                .Include(x => x.Services)
                 .FirstOrDefaultAsync(x => x.Id == id);
         }
 
         public async Task<List<ServiceOrder>> GetAllAsync()
         {
-            return await _context.ServiceOrders
+            return await GetAllAsync(null);
+        }
+
+        public async Task<List<ServiceOrder>> GetAllAsync(OrderStatus? status)
+        {
+            var orders = await _context.ServiceOrders
                 .AsNoTracking()
                 .Include(x => x.StatusHistory)
+                .Include(x => x.Parts)
+                .Include(x => x.Services)
                 .OrderByDescending(x => x.CreatedAt)
                 .ToListAsync();
+
+            if (status.HasValue)
+            {
+                return orders
+                    .Where(x => x.GetCurrentStatus() == status.Value)
+                    .ToList();
+            }
+
+            return orders;
+        }
+
+        public async Task<List<ServiceOrder>> GetByStatusAsync(OrderStatus status)
+        {
+            return await GetAllAsync(status);
         }
 
         public async Task SaveChangesAsync()

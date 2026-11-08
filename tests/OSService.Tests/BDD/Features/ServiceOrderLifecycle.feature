@@ -54,3 +54,24 @@ Feature: Complete Service Order Lifecycle Management (OS Service)
     And an attempt is made to deliver the vehicle before completing the service
     Then the operation should be rejected with HTTP status 400 and message "Service order must be in 'Completed' status to be delivered."
     And the Service Order status should remain "Received"
+
+  Scenario: Adding parts and services and creating budget for a Service Order under analysis
+    Given a valid customer and their vehicle are registered for opening a Service Order
+    When a new Service Order is opened for the customer and vehicle
+    And the mechanic starts diagnostics on the Service Order
+    And a part with price 60.00 and quantity 2 is added to the Service Order
+    And a service with price 180.00 is added to the Service Order
+    And the mechanic creates the budget based on added parts and services
+    Then the budget recorded on the Service Order should be 300.00
+    When the mechanic finishes the technical analysis with calculated budget
+    Then the Service Order status should be updated to "AwaitingApproval"
+    And the budget recorded on the Service Order should be 300.00
+
+  Scenario: Receiving payment directly approves budget and advances Service Order to execution
+    Given a valid customer and their vehicle are registered for opening a Service Order
+    When a new Service Order is opened for the customer and vehicle
+    And the mechanic starts diagnostics on the Service Order
+    And the mechanic finishes the technical analysis with a budget of 500.00
+    When payment of 500.00 is received for the Service Order
+    Then the Service Order status should be updated to "InProgress"
+    And the Service Order should be marked as paid

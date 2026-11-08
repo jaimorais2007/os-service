@@ -160,6 +160,81 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
         _lastActionResult = await _controller.Deliver(_serviceOrderId);
     }
 
+    [When(@"a part with price (.*) and quantity (\d+) is added to the Service Order")]
+    public async Task WhenAPartWithPriceAndQuantityIsAddedToTheServiceOrder(string priceValue, int quantity)
+    {
+        var price = decimal.Parse(priceValue, CultureInfo.InvariantCulture);
+        var request = new ServiceOrderAddPartRequest
+        {
+            PartId = Guid.NewGuid(),
+            PartName = "Sample Part",
+            Quantity = quantity,
+            UnitPrice = price
+        };
+
+        _lastActionResult = await _controller.AddPart(_serviceOrderId, request);
+        var okResult = Assert.IsType<OkObjectResult>(_lastActionResult);
+        _lastResponse = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+    }
+
+    [When(@"a service with price (.*) is added to the Service Order")]
+    public async Task WhenAServiceWithPriceIsAddedToTheServiceOrder(string priceValue)
+    {
+        var price = decimal.Parse(priceValue, CultureInfo.InvariantCulture);
+        var request = new ServiceOrderAddServiceRequest
+        {
+            ServiceId = Guid.NewGuid(),
+            ServiceName = "Sample Service",
+            Price = price
+        };
+
+        _lastActionResult = await _controller.AddService(_serviceOrderId, request);
+        var okResult = Assert.IsType<OkObjectResult>(_lastActionResult);
+        _lastResponse = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+    }
+
+    [When(@"the mechanic creates the budget based on added parts and services")]
+    public async Task WhenTheMechanicCreatesTheBudgetBasedOnAddedPartsAndServices()
+    {
+        _lastActionResult = await _controller.CreateBudget(_serviceOrderId);
+        var okResult = Assert.IsType<OkObjectResult>(_lastActionResult);
+        _lastResponse = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+    }
+
+    [When(@"the mechanic finishes the technical analysis with calculated budget")]
+    public async Task WhenTheMechanicFinishesTheTechnicalAnalysisWithCalculatedBudget()
+    {
+        _lastActionResult = await _controller.FinishAnalysis(_serviceOrderId, new ServiceOrderFinishAnalysisRequest());
+        var okResult = Assert.IsType<OkObjectResult>(_lastActionResult);
+        _lastResponse = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+    }
+
+    [When(@"payment of (.*) is received for the Service Order")]
+    public async Task WhenPaymentIsReceivedForTheServiceOrder(string amountValue)
+    {
+        var amount = decimal.Parse(amountValue, CultureInfo.InvariantCulture);
+        var request = new ServiceOrderPaymentRequest
+        {
+            Amount = amount,
+            TransactionId = "BDD-TX-100"
+        };
+
+        _lastActionResult = await _controller.ReceivePayment(_serviceOrderId, request);
+        var okResult = Assert.IsType<OkObjectResult>(_lastActionResult);
+        _lastResponse = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+    }
+
+    [Then(@"the Service Order should be marked as paid")]
+    public async Task ThenTheServiceOrderShouldBeMarkedAsPaid()
+    {
+        var getByIdResult = await _controller.GetById(_serviceOrderId);
+        var okResult = Assert.IsType<OkObjectResult>(getByIdResult);
+        var persistedOrder = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+
+        Assert.True(persistedOrder.IsPaid);
+        Assert.NotNull(persistedOrder.PaidAt);
+    }
+
     [Then(@"the Service Order should be created with status ""(.*)""")]
     public async Task ThenTheServiceOrderShouldBeCreatedWithStatus(string expectedStatusName)
     {

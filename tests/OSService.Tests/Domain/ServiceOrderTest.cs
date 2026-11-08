@@ -1,4 +1,4 @@
-﻿
+
 using OSService.Domain.Entities;
 using OSService.Domain.Enum;
 using OSService.Domain.Exceptions;
@@ -158,6 +158,236 @@ namespace OSService.Tests.Domain
             Assert.Equal(
                 OrderStatus.Delivered,
                 serviceOrder.GetCurrentStatus());
+        }
+
+        [Fact]
+        public void AddPart_ShouldAddPartToServiceOrder()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+
+            var partId = Guid.NewGuid();
+            var part = serviceOrder.AddPart(partId, 2, 50m, "Oil Filter");
+
+            Assert.Single(serviceOrder.Parts);
+            Assert.Equal(partId, part.PartId);
+            Assert.Equal(2, part.Quantity);
+            Assert.Equal(50m, part.UnitPrice);
+            Assert.Equal(100m, part.TotalPrice);
+            Assert.True(part.StockQuantityWasEnsured);
+        }
+
+        [Fact]
+        public void AddPart_WhenAlreadyExists_ShouldIncreaseQuantity()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var partId = Guid.NewGuid();
+
+            serviceOrder.AddPart(partId, 2, 50m, "Spark Plug");
+            serviceOrder.AddPart(partId, 3, 50m, "Spark Plug");
+
+            Assert.Single(serviceOrder.Parts);
+            Assert.Equal(5, serviceOrder.Parts.First().Quantity);
+            Assert.Equal(250m, serviceOrder.Parts.First().TotalPrice);
+        }
+
+        [Fact]
+        public void AddPart_WithInvalidData_ShouldThrowException()
+        {
+            var serviceOrder = CreateServiceOrder();
+
+            Assert.Throws<DomainException>(() => serviceOrder.AddPart(Guid.Empty, 1, 10m));
+            Assert.Throws<DomainException>(() => serviceOrder.AddPart(Guid.NewGuid(), 0, 10m));
+            Assert.Throws<DomainException>(() => serviceOrder.AddPart(Guid.NewGuid(), 1, -5m));
+        }
+
+        [Fact]
+        public void AddPart_InInvalidStatus_ShouldThrowException()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(100m);
+            serviceOrder.Approve();
+
+            Assert.Throws<DomainException>(() => serviceOrder.AddPart(Guid.NewGuid(), 1, 10m));
+        }
+
+        [Fact]
+        public void RemovePart_ShouldRemovePartFromServiceOrder()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var partId = Guid.NewGuid();
+            serviceOrder.AddPart(partId, 1, 50m);
+
+            serviceOrder.RemovePart(partId);
+
+            Assert.Empty(serviceOrder.Parts);
+        }
+
+        [Fact]
+        public void RemovePart_WhenNotFound_ShouldThrowException()
+        {
+            var serviceOrder = CreateServiceOrder();
+
+            Assert.Throws<DomainException>(() => serviceOrder.RemovePart(Guid.NewGuid()));
+        }
+
+        [Fact]
+        public void AddService_ShouldAddServiceToServiceOrder()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+
+            var serviceId = Guid.NewGuid();
+            var serviceItem = serviceOrder.AddService(serviceId, 150m, "Oil Change");
+
+            Assert.Single(serviceOrder.Services);
+            Assert.Equal(serviceId, serviceItem.ServiceId);
+            Assert.Equal(150m, serviceItem.Price);
+            Assert.Equal("Oil Change", serviceItem.ServiceName);
+        }
+
+        [Fact]
+        public void AddService_WhenAlreadyExists_ShouldThrowException()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var serviceId = Guid.NewGuid();
+
+            serviceOrder.AddService(serviceId, 100m);
+
+            Assert.Throws<DomainException>(() => serviceOrder.AddService(serviceId, 120m));
+        }
+
+        [Fact]
+        public void AddService_WithInvalidData_ShouldThrowException()
+        {
+            var serviceOrder = CreateServiceOrder();
+
+            Assert.Throws<DomainException>(() => serviceOrder.AddService(Guid.Empty, 50m));
+            Assert.Throws<DomainException>(() => serviceOrder.AddService(Guid.NewGuid(), -10m));
+        }
+
+        [Fact]
+        public void RemoveService_ShouldRemoveServiceFromServiceOrder()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var serviceId = Guid.NewGuid();
+            serviceOrder.AddService(serviceId, 100m);
+
+            serviceOrder.RemoveService(serviceId);
+
+            Assert.Empty(serviceOrder.Services);
+        }
+
+        [Fact]
+        public void RemoveService_WhenNotFound_ShouldThrowException()
+        {
+            var serviceOrder = CreateServiceOrder();
+
+            Assert.Throws<DomainException>(() => serviceOrder.RemoveService(Guid.NewGuid()));
+        }
+
+        [Fact]
+        public void CalculateBudget_ShouldSumPartsAndServices()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.AddPart(Guid.NewGuid(), 2, 50m);
+            serviceOrder.AddService(Guid.NewGuid(), 150m);
+
+            var total = serviceOrder.CalculateBudget();
+
+            Assert.Equal(250m, total);
+        }
+
+        [Fact]
+        public void CreateBudget_ShouldSetCalculatedBudget()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.AddPart(Guid.NewGuid(), 1, 80m);
+            serviceOrder.AddService(Guid.NewGuid(), 120m);
+
+            serviceOrder.CreateBudget();
+
+            Assert.Equal(200m, serviceOrder.Budget);
+        }
+
+        [Fact]
+        public void FinishAnalysis_WithoutExplicitBudget_ShouldUseCalculatedBudget()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.AddPart(Guid.NewGuid(), 2, 100m);
+            serviceOrder.AddService(Guid.NewGuid(), 200m);
+
+            serviceOrder.FinishAnalysis();
+
+            Assert.Equal(400m, serviceOrder.Budget);
+            Assert.Equal(OrderStatus.AwaitingApproval, serviceOrder.GetCurrentStatus());
+        }
+
+        [Fact]
+        public void ReceivePayment_WhenAwaitingApproval_ShouldChangeStatusToInProgressAndMarkPaid()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(300m);
+
+            serviceOrder.ReceivePayment(300m, "TX-12345");
+
+            Assert.True(serviceOrder.IsPaid);
+            Assert.NotNull(serviceOrder.PaidAt);
+            Assert.Equal(300m, serviceOrder.PaidAmount);
+            Assert.Equal("TX-12345", serviceOrder.PaymentTransactionId);
+            Assert.Equal(OrderStatus.InProgress, serviceOrder.GetCurrentStatus());
+        }
+
+        [Fact]
+        public void ReceivePayment_WhenAlreadyPaid_ShouldThrowException()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(300m);
+            serviceOrder.ReceivePayment(300m);
+
+            Assert.Throws<DomainException>(() => serviceOrder.ReceivePayment(300m));
+        }
+
+        [Fact]
+        public void ReceivePayment_BeforeAnalysis_ShouldThrowException()
+        {
+            var serviceOrder = CreateServiceOrder();
+
+            Assert.Throws<DomainException>(() => serviceOrder.ReceivePayment(100m));
+        }
+
+        [Fact]
+        public void ReceivePayment_WhenRejected_ShouldThrowException()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(300m);
+            serviceOrder.Reject();
+
+            Assert.Throws<DomainException>(() => serviceOrder.ReceivePayment(300m));
+        }
+
+        [Fact]
+        public void FinishExecution_WithUnensuredParts_ShouldThrowException()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var partId = Guid.NewGuid();
+            serviceOrder.AddPart(partId, 1, 50m, "Brake Pad", stockQuantityWasEnsured: false);
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(100m);
+            serviceOrder.Approve();
+
+            Assert.Throws<DomainException>(() => serviceOrder.FinishExecution(false));
+
+            serviceOrder.EnsurePartStock(partId);
+            serviceOrder.FinishExecution(false);
+
+            Assert.Equal(OrderStatus.Completed, serviceOrder.GetCurrentStatus());
         }
     }
 }
