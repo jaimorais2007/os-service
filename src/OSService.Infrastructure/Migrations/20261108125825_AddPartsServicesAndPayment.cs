@@ -9,6 +9,18 @@ namespace OSService.Infrastructure.Migrations
     [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     public partial class AddPartsServicesAndPayment : Migration
     {
+        private static readonly string[] ServiceOrderPartIndexColumns =
+        {
+            "ServiceOrderId",
+            "PartId"
+        };
+
+        private static readonly string[] ServiceOrderServiceIndexColumns =
+        {
+            "ServiceOrderId",
+            "ServiceId"
+        };
+
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -87,12 +99,12 @@ namespace OSService.Infrastructure.Migrations
             migrationBuilder.CreateIndex(
                 name: "IX_ServiceOrderPart_ServiceOrderId_PartId",
                 table: "ServiceOrderPart",
-                columns: new[] { "ServiceOrderId", "PartId" });
+                columns: ServiceOrderPartIndexColumns);
 
             migrationBuilder.CreateIndex(
                 name: "IX_ServiceOrderService_ServiceOrderId_ServiceId",
                 table: "ServiceOrderService",
-                columns: new[] { "ServiceOrderId", "ServiceId" });
+                columns: ServiceOrderServiceIndexColumns);
         }
 
         /// <inheritdoc />

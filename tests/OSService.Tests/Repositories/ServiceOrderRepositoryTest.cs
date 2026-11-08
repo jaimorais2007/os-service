@@ -264,6 +264,42 @@ namespace OSService.Tests.Repositories
         }
 
         [Fact]
+        public async Task GetByIdAndGetAll_WithMultiplePartsServicesAndStatuses_ShouldAvoidCartesianDuplication()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.AddPart(Guid.NewGuid(), 2, 50m, "Oil Filter");
+            serviceOrder.AddPart(Guid.NewGuid(), 4, 30m, "Spark Plug");
+            serviceOrder.AddService(Guid.NewGuid(), 120m, "Oil Change");
+            serviceOrder.AddService(Guid.NewGuid(), 200m, "Engine Alignment");
+            serviceOrder.FinishAnalysis(440m);
+
+            await using (var context = CreateContext())
+            {
+                var repository = new ServiceOrderRepository(context);
+                await repository.AddAsync(serviceOrder);
+                await repository.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext())
+            {
+                var repository = new ServiceOrderRepository(context);
+                var byId = await repository.GetByIdAsync(serviceOrder.Id);
+                var all = await repository.GetAllAsync();
+
+                Assert.NotNull(byId);
+                Assert.Equal(3, byId.StatusHistory.Count);
+                Assert.Equal(2, byId.Parts.Count);
+                Assert.Equal(2, byId.Services.Count);
+
+                var fromList = Assert.Single(all);
+                Assert.Equal(3, fromList.StatusHistory.Count);
+                Assert.Equal(2, fromList.Parts.Count);
+                Assert.Equal(2, fromList.Services.Count);
+            }
+        }
+
+        [Fact]
         public async Task ProcessedSagaEvents_ShouldPersistAndCheckIdempotency()
         {
             var eventId = Guid.NewGuid();

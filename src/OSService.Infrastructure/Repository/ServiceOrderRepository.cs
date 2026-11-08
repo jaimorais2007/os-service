@@ -26,6 +26,7 @@ namespace OSService.Infrastructure.Repositories
                 .Include(x => x.StatusHistory)
                 .Include(x => x.Parts)
                 .Include(x => x.Services)
+                .AsSplitQuery()
                 .FirstOrDefaultAsync(x => x.Id == id);
         }
 
@@ -41,6 +42,7 @@ namespace OSService.Infrastructure.Repositories
                 .Include(x => x.StatusHistory)
                 .Include(x => x.Parts)
                 .Include(x => x.Services)
+                .AsSplitQuery()
                 .OrderByDescending(x => x.CreatedAt)
                 .ToListAsync();
 
