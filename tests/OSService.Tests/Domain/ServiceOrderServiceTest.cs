@@ -195,6 +195,27 @@ namespace OSService.Tests.Application
         }
 
         [Fact]
+        public async Task FinishExecutionAsync_ShouldChangeStatusAndSave()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(350m);
+            serviceOrder.Approve();
+
+            _repositoryMock
+                .Setup(x => x.GetByIdAsync(serviceOrder.Id))
+                .ReturnsAsync(serviceOrder);
+
+            var result = await _service.FinishExecutionAsync(serviceOrder.Id, false);
+
+            Assert.Equal(OrderStatus.Completed, result.Status);
+
+            _repositoryMock.Verify(
+                x => x.SaveChangesAsync(),
+                Times.Once);
+        }
+
+        [Fact]
         public async Task DeliverAsync_ShouldChangeStatusAndSave()
         {
             var serviceOrder = CreateServiceOrder();

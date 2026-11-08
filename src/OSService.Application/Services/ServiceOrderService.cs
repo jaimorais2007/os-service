@@ -161,6 +161,26 @@ namespace OSService.Application.Services
             return MapResponse(serviceOrder);
         }
 
+        public async Task<ServiceOrderGetResponse> FinishExecutionAsync(
+            Guid id,
+            bool hasPendingParts = false)
+        {
+            var serviceOrder = await FindEntityAsync(id);
+
+            serviceOrder.FinishExecution(hasPendingParts);
+
+            await _repository.SaveChangesAsync();
+
+            TryRecordMetrics(serviceOrder);
+
+            await TryPublishNotificationAsync(
+                serviceOrder.CustomerId,
+                serviceOrder.Id,
+                serviceOrder.GetCurrentStatus().ToString());
+
+            return MapResponse(serviceOrder);
+        }
+
         public async Task<ServiceOrderGetResponse> DeliverAsync(Guid id)
         {
             var serviceOrder = await FindEntityAsync(id);

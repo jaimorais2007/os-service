@@ -1,4 +1,4 @@
-﻿
+
 using Microsoft.AspNetCore.Mvc;
 using OSService.Application.Commands;
 using OSService.Application.Services;
@@ -102,6 +102,15 @@ namespace OSService.Api.Controllers
         {
             return await ExecuteStatusChangeAsync(
                 () => _serviceOrderService.RejectAsync(id));
+        }
+
+        [HttpPost("{id:guid}/finish-execution")]
+        public async Task<IActionResult> FinishExecution(
+            Guid id,
+            [FromQuery] bool hasPendingParts = false)
+        {
+            return await ExecuteStatusChangeAsync(
+                () => _serviceOrderService.FinishExecutionAsync(id, hasPendingParts));
         }
 
         [HttpPost("{id:guid}/deliver")]
