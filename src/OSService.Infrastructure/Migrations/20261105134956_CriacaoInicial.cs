@@ -1,4 +1,4 @@
-﻿
+
 using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace OSService.Infrastructure.Migrations
 {
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     public partial class InitialCreate : Migration
     {
         private static readonly string[] ServiceOrderStatusIndexColumns =

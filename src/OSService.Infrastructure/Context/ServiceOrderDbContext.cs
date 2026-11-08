@@ -1,4 +1,3 @@
-﻿
 using Microsoft.EntityFrameworkCore;
 using OSService.Domain.Entities;
 
@@ -15,6 +14,14 @@ namespace OSService.Infrastructure.Contexts
         public DbSet<ServiceOrder> ServiceOrders { get; set; }
 
         public DbSet<ServiceOrderStatus> ServiceOrderStatuses { get; set; }
+
+        public DbSet<ServiceOrderPart> ServiceOrderParts { get; set; }
+
+        public DbSet<ServiceOrderServiceItem> ServiceOrderServices { get; set; }
+
+        public DbSet<ProcessedSagaEvent> ProcessedSagaEvents { get; set; }
+
+        public DbSet<OutboxMessage> OutboxMessages { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

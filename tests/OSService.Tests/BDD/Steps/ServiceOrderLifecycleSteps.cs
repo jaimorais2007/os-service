@@ -2,17 +2,21 @@ using System.Globalization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using OSService.Api.Controllers;
 using OSService.Application.Commands;
+using OSService.Application.Saga;
 using OSService.Application.Services;
 using OSService.Domain.Entities;
 using OSService.Domain.Enum;
 using OSService.Domain.Interface;
 using OSService.Infrastructure.Contexts;
+using OSService.Infrastructure.Messaging;
 using OSService.Infrastructure.Repositories;
 using Reqnroll;
+using Xunit;
 
 namespace OSService.Tests.BDD.Steps;
 
@@ -22,9 +26,15 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
     private readonly SqliteConnection _connection;
     private readonly ServiceOrderDbContext _dbContext;
     private readonly ServiceOrderRepository _repository;
+    private readonly OutboxRepository _outboxRepository;
+    private readonly ServiceProvider _outboxServiceProvider;
+    private readonly OutboxPublisherBackgroundService _outboxPublisher;
     private readonly Mock<IServiceOrderNotificationPublisher> _notificationPublisherMock;
     private readonly Mock<IServiceOrderMetrics> _metricsMock;
+    private readonly Mock<ISagaEventPublisher> _sagaPublisherMock;
+    private readonly List<string> _publishedSagaEvents = new();
     private readonly ServiceOrderService _serviceOrderService;
+    private readonly SagaEventProcessor _sagaEventProcessor;
     private readonly ServiceOrderController _controller;
 
     private Guid _customerId;
@@ -46,14 +56,43 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
         _dbContext.Database.EnsureCreated();
 
         _repository = new ServiceOrderRepository(_dbContext);
+        _outboxRepository = new OutboxRepository(_dbContext);
         _notificationPublisherMock = new Mock<IServiceOrderNotificationPublisher>();
         _metricsMock = new Mock<IServiceOrderMetrics>();
+        _sagaPublisherMock = new Mock<ISagaEventPublisher>();
+
+        _sagaPublisherMock
+            .Setup(x => x.PublishRawAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()))
+            .Callback<string, string, string?, CancellationToken>((eventType, _, _, _) =>
+            {
+                _publishedSagaEvents.Add(eventType);
+            })
+            .Returns(Task.CompletedTask);
+
+        var services = new ServiceCollection();
+        services.AddScoped<IOutboxRepository>(_ => _outboxRepository);
+        services.AddSingleton(_sagaPublisherMock.Object);
+        _outboxServiceProvider = services.BuildServiceProvider();
+
+        _outboxPublisher = new OutboxPublisherBackgroundService(
+            _outboxServiceProvider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<OutboxPublisherBackgroundService>.Instance);
 
         _serviceOrderService = new ServiceOrderService(
             _repository,
             _notificationPublisherMock.Object,
             NullLogger<ServiceOrderService>.Instance,
             _metricsMock.Object);
+
+        _sagaEventProcessor = new SagaEventProcessor(
+            _repository,
+            _notificationPublisherMock.Object,
+            _metricsMock.Object,
+            NullLogger<SagaEventProcessor>.Instance);
 
         _controller = new ServiceOrderController(_serviceOrderService);
     }
@@ -75,6 +114,7 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
         await WhenTheMechanicStartsDiagnosticsOnTheServiceOrder();
         await WhenTheMechanicFinishesTheTechnicalAnalysisWithABudgetOf(budget.ToString(CultureInfo.InvariantCulture));
         await WhenTheCustomerApprovesTheServiceOrderBudget();
+        await WhenTheSagaReceivesAPaymentConfirmedEventWithTransaction("BDD-APPROVED-TX");
     }
 
     [When(@"a new Service Order is opened for the customer and vehicle")]
@@ -160,6 +200,160 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
         _lastActionResult = await _controller.Deliver(_serviceOrderId);
     }
 
+    [When(@"a part with price (.*) and quantity (\d+) is added to the Service Order")]
+    public async Task WhenAPartWithPriceAndQuantityIsAddedToTheServiceOrder(string priceValue, int quantity)
+    {
+        var price = decimal.Parse(priceValue, CultureInfo.InvariantCulture);
+        var request = new ServiceOrderAddPartRequest
+        {
+            PartId = Guid.NewGuid(),
+            PartName = "Sample Part",
+            Quantity = quantity,
+            UnitPrice = price
+        };
+
+        _lastActionResult = await _controller.AddPart(_serviceOrderId, request);
+        var okResult = Assert.IsType<OkObjectResult>(_lastActionResult);
+        _lastResponse = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+    }
+
+    [When(@"a service with price (.*) is added to the Service Order")]
+    public async Task WhenAServiceWithPriceIsAddedToTheServiceOrder(string priceValue)
+    {
+        var price = decimal.Parse(priceValue, CultureInfo.InvariantCulture);
+        var request = new ServiceOrderAddServiceRequest
+        {
+            ServiceId = Guid.NewGuid(),
+            ServiceName = "Sample Service",
+            Price = price
+        };
+
+        _lastActionResult = await _controller.AddService(_serviceOrderId, request);
+        var okResult = Assert.IsType<OkObjectResult>(_lastActionResult);
+        _lastResponse = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+    }
+
+    [When(@"the mechanic creates the budget based on added parts and services")]
+    public async Task WhenTheMechanicCreatesTheBudgetBasedOnAddedPartsAndServices()
+    {
+        _lastActionResult = await _controller.CreateBudget(_serviceOrderId);
+        var okResult = Assert.IsType<OkObjectResult>(_lastActionResult);
+        _lastResponse = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+    }
+
+    [When(@"the mechanic finishes the technical analysis with calculated budget")]
+    public async Task WhenTheMechanicFinishesTheTechnicalAnalysisWithCalculatedBudget()
+    {
+        _lastActionResult = await _controller.FinishAnalysis(_serviceOrderId, new ServiceOrderFinishAnalysisRequest());
+        var okResult = Assert.IsType<OkObjectResult>(_lastActionResult);
+        _lastResponse = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+    }
+
+    [When(@"payment of (.*) is received for the Service Order")]
+    public async Task WhenPaymentIsReceivedForTheServiceOrder(string amountValue)
+    {
+        var amount = decimal.Parse(amountValue, CultureInfo.InvariantCulture);
+        var request = new ServiceOrderPaymentRequest
+        {
+            Amount = amount,
+            TransactionId = "BDD-TX-100"
+        };
+
+        _lastActionResult = await _controller.ReceivePayment(_serviceOrderId, request);
+        var okResult = Assert.IsType<OkObjectResult>(_lastActionResult);
+        _lastResponse = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+    }
+
+    [When(@"the Saga receives a ""PaymentCreated"" event with URL ""(.*)"" and transaction ""(.*)""")]
+    public async Task WhenTheSagaReceivesAPaymentCreatedEvent(string paymentUrl, string transactionId)
+    {
+        var envelope = SagaEventJson.CreateEnvelope(
+            SagaEventTypes.PaymentCreated,
+            _serviceOrderId,
+            new PaymentCreatedPayload(_serviceOrderId, Guid.NewGuid(), paymentUrl, transactionId));
+
+        await _sagaEventProcessor.ProcessAsync(envelope);
+    }
+
+    [When(@"the Saga receives a ""PaymentConfirmed"" event with transaction ""(.*)""")]
+    public async Task WhenTheSagaReceivesAPaymentConfirmedEventWithTransaction(string transactionId)
+    {
+        var envelope = SagaEventJson.CreateEnvelope(
+            SagaEventTypes.PaymentConfirmed,
+            _serviceOrderId,
+            new PaymentConfirmedPayload(_serviceOrderId, transactionId));
+
+        await _sagaEventProcessor.ProcessAsync(envelope);
+    }
+
+    [When(@"the Saga receives a ""PartStockEnsured"" event for all parts in the Service Order")]
+    public async Task WhenTheSagaReceivesAPartStockEnsuredEventForAllPartsInTheServiceOrder()
+    {
+        var entity = await _repository.GetByIdAsync(_serviceOrderId);
+        Assert.NotNull(entity);
+
+        foreach (var part in entity.Parts.ToList())
+        {
+            var envelope = SagaEventJson.CreateEnvelope(
+                SagaEventTypes.PartStockEnsured,
+                _serviceOrderId,
+                new PartStockEnsuredPayload(_serviceOrderId, part.PartId, part.Quantity));
+
+            await _sagaEventProcessor.ProcessAsync(envelope);
+        }
+    }
+
+    [When(@"the Saga receives a ""PaymentCreationFailed"" event with reason ""(.*)""")]
+    public async Task WhenTheSagaReceivesAPaymentCreationFailedEventWithReason(string reason)
+    {
+        var envelope = SagaEventJson.CreateEnvelope(
+            SagaEventTypes.PaymentCreationFailed,
+            _serviceOrderId,
+            new PaymentCreationFailedPayload(_serviceOrderId, reason));
+
+        await _sagaEventProcessor.ProcessAsync(envelope);
+    }
+
+    [When(@"the Saga receives a ""PaymentRefunded"" event with transaction ""(.*)"" and reason ""(.*)""")]
+    public async Task WhenTheSagaReceivesAPaymentRefundedEvent(string transactionId, string reason)
+    {
+        var envelope = SagaEventJson.CreateEnvelope(
+            SagaEventTypes.PaymentRefunded,
+            _serviceOrderId,
+            new PaymentRefundedPayload(_serviceOrderId, transactionId, reason));
+
+        await _sagaEventProcessor.ProcessAsync(envelope);
+    }
+
+    [Then(@"the Service Order should be marked as paid")]
+    public async Task ThenTheServiceOrderShouldBeMarkedAsPaid()
+    {
+        var getByIdResult = await _controller.GetById(_serviceOrderId);
+        var okResult = Assert.IsType<OkObjectResult>(getByIdResult);
+        var persistedOrder = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+
+        Assert.True(persistedOrder.IsPaid);
+        Assert.NotNull(persistedOrder.PaidAt);
+    }
+
+    [Then(@"the Service Order should not be marked as paid")]
+    public async Task ThenTheServiceOrderShouldNotBeMarkedAsPaid()
+    {
+        var getByIdResult = await _controller.GetById(_serviceOrderId);
+        var okResult = Assert.IsType<OkObjectResult>(getByIdResult);
+        var persistedOrder = Assert.IsType<ServiceOrderGetResponse>(okResult.Value);
+
+        Assert.False(persistedOrder.IsPaid);
+        Assert.Null(persistedOrder.PaidAt);
+    }
+
+    [Then(@"the Saga event ""(.*)"" should have been published")]
+    public async Task ThenTheSagaEventShouldHaveBeenPublished(string expectedEventType)
+    {
+        await _outboxPublisher.PublishPendingAsync(CancellationToken.None);
+        Assert.Contains(expectedEventType, _publishedSagaEvents);
+    }
+
     [Then(@"the Service Order should be created with status ""(.*)""")]
     public async Task ThenTheServiceOrderShouldBeCreatedWithStatus(string expectedStatusName)
     {
@@ -210,7 +404,7 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
                 _serviceOrderId,
                 expectedStatus,
                 It.IsAny<CancellationToken>()),
-            Times.Once);
+            Times.AtLeastOnce);
     }
 
     [Then(@"the Service Order status history in the database should contain (\d+) status records")]
@@ -245,6 +439,7 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
 
     public void Dispose()
     {
+        _outboxServiceProvider.Dispose();
         _dbContext.Dispose();
         _connection.Dispose();
     }

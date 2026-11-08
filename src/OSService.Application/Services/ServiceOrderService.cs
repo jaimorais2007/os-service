@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Logging;
 using OSService.Application.Commands;
+using OSService.Application.Saga;
 using OSService.Domain.Entities;
+using OSService.Domain.Enum;
 using OSService.Domain.Interface;
 using OSService.Domain.Interfaces;
 
@@ -68,22 +70,129 @@ namespace OSService.Application.Services
                 .ToList();
         }
 
-        private static ServiceOrderGetResponse MapResponse(
-            ServiceOrder serviceOrder)
+        public async Task<List<ServiceOrderGetResponse>> GetAllAsync(OrderStatus? status)
         {
-            return new ServiceOrderGetResponse
-            {
-                Id = serviceOrder.Id,
-                CustomerId = serviceOrder.CustomerId,
-                VehicleId = serviceOrder.VehicleId,
-                CreatedAt = serviceOrder.CreatedAt,
-                Budget = serviceOrder.Budget,
-                Inactive = serviceOrder.Inactive,
-                Status = serviceOrder.GetCurrentStatus()
-            };
+            if (!status.HasValue)
+                return await GetAllAsync();
+
+            var serviceOrders = await _repository.GetAllAsync(status);
+
+            return serviceOrders
+                .Select(MapResponse)
+                .ToList();
         }
 
-        #region Service Order Status Changes
+        public async Task<List<ServiceOrderGetResponse>> GetByStatusAsync(OrderStatus status)
+        {
+            var serviceOrders = await _repository.GetByStatusAsync(status);
+
+            return serviceOrders
+                .Select(MapResponse)
+                .ToList();
+        }
+
+        #region Service Order Parts and Services
+
+        public async Task<ServiceOrderGetResponse> AddPartAsync(
+            Guid id,
+            ServiceOrderAddPartRequest request)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+
+            var serviceOrder = await FindEntityAsync(id);
+
+            serviceOrder.AddPart(
+                request.PartId,
+                request.Quantity,
+                request.UnitPrice,
+                request.PartName,
+                request.StockQuantityWasEnsured);
+
+            await _repository.SaveChangesAsync();
+
+            _logger?.LogInformation(
+                "Part {PartId} added to Service Order {ServiceOrderId}",
+                request.PartId,
+                id);
+
+            return MapResponse(serviceOrder);
+        }
+
+        public async Task<ServiceOrderGetResponse> RemovePartAsync(
+            Guid id,
+            Guid partId)
+        {
+            var serviceOrder = await FindEntityAsync(id);
+
+            serviceOrder.RemovePart(partId);
+
+            await _repository.SaveChangesAsync();
+
+            _logger?.LogInformation(
+                "Part {PartId} removed from Service Order {ServiceOrderId}",
+                partId,
+                id);
+
+            return MapResponse(serviceOrder);
+        }
+
+        public async Task<ServiceOrderGetResponse> EnsurePartStockAsync(
+            Guid id,
+            Guid partId)
+        {
+            var serviceOrder = await FindEntityAsync(id);
+
+            serviceOrder.EnsurePartStock(partId);
+
+            await _repository.SaveChangesAsync();
+
+            return MapResponse(serviceOrder);
+        }
+
+        public async Task<ServiceOrderGetResponse> AddServiceAsync(
+            Guid id,
+            ServiceOrderAddServiceRequest request)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+
+            var serviceOrder = await FindEntityAsync(id);
+
+            serviceOrder.AddService(
+                request.ServiceId,
+                request.Price,
+                request.ServiceName);
+
+            await _repository.SaveChangesAsync();
+
+            _logger?.LogInformation(
+                "Service {ServiceId} added to Service Order {ServiceOrderId}",
+                request.ServiceId,
+                id);
+
+            return MapResponse(serviceOrder);
+        }
+
+        public async Task<ServiceOrderGetResponse> RemoveServiceAsync(
+            Guid id,
+            Guid serviceId)
+        {
+            var serviceOrder = await FindEntityAsync(id);
+
+            serviceOrder.RemoveService(serviceId);
+
+            await _repository.SaveChangesAsync();
+
+            _logger?.LogInformation(
+                "Service {ServiceId} removed from Service Order {ServiceOrderId}",
+                serviceId,
+                id);
+
+            return MapResponse(serviceOrder);
+        }
+
+        #endregion
+
+        #region Service Order Status Changes and Budget
 
         public async Task<ServiceOrderGetResponse> StartDiagnosticsAsync(Guid id)
         {
@@ -99,6 +208,24 @@ namespace OSService.Application.Services
                 serviceOrder.CustomerId,
                 serviceOrder.Id,
                 serviceOrder.GetCurrentStatus().ToString());
+
+            return MapResponse(serviceOrder);
+        }
+
+        public async Task<ServiceOrderGetResponse> CreateBudgetAsync(
+            Guid id,
+            decimal? budget = null)
+        {
+            var serviceOrder = await FindEntityAsync(id);
+
+            serviceOrder.CreateBudget(budget);
+
+            await _repository.SaveChangesAsync();
+
+            _logger?.LogInformation(
+                "Budget created for Service Order {ServiceOrderId}. Budget: {Budget}",
+                id,
+                serviceOrder.Budget);
 
             return MapResponse(serviceOrder);
         }
@@ -131,6 +258,22 @@ namespace OSService.Application.Services
 
             serviceOrder.Approve();
 
+            var totalAmount = serviceOrder.Budget > 0
+                ? serviceOrder.Budget
+                : serviceOrder.CalculateBudget();
+
+            var payload = new BudgetApprovedPayload(
+                serviceOrder.Id,
+                totalAmount,
+                serviceOrder.Services.Select(s => s.ServiceId).ToList(),
+                serviceOrder.Parts.Select(p => new BudgetApprovedPart(p.PartId, p.Quantity)).ToList());
+
+            var outboxMessage = SagaEventJson.CreateOutboxMessage(
+                SagaEventTypes.BudgetApproved,
+                serviceOrder.Id,
+                payload);
+
+            await _repository.AddOutboxMessageAsync(outboxMessage);
             await _repository.SaveChangesAsync();
 
             TryRecordMetrics(serviceOrder);
@@ -147,7 +290,19 @@ namespace OSService.Application.Services
         {
             var serviceOrder = await FindEntityAsync(id);
 
+            var previousStatus = serviceOrder.GetCurrentStatus();
+
             serviceOrder.Reject();
+
+            if (previousStatus == OrderStatus.WaitingPayment)
+            {
+                var outboxMessage = SagaEventJson.CreateOutboxMessage(
+                    SagaEventTypes.ServiceOrderRejected,
+                    serviceOrder.Id,
+                    new ServiceOrderRejectedPayload(serviceOrder.Id));
+
+                await _repository.AddOutboxMessageAsync(outboxMessage);
+            }
 
             await _repository.SaveChangesAsync();
 
@@ -157,6 +312,50 @@ namespace OSService.Application.Services
                 serviceOrder.CustomerId,
                 serviceOrder.Id,
                 serviceOrder.GetCurrentStatus().ToString());
+
+            return MapResponse(serviceOrder);
+        }
+
+        public async Task<ServiceOrderGetResponse> ReceivePaymentAsync(
+            Guid id,
+            ServiceOrderPaymentRequest? request = null)
+        {
+            var serviceOrder = await FindEntityAsync(id);
+
+            var previousStatus = serviceOrder.GetCurrentStatus();
+
+            serviceOrder.ReceivePayment(request?.Amount, request?.TransactionId);
+
+            if (previousStatus == OrderStatus.WaitingPayment &&
+                serviceOrder.Parts.Count > 0 &&
+                serviceOrder.Parts.Any(p => !p.StockQuantityWasEnsured))
+            {
+                var outboxMessage = SagaEventJson.CreateOutboxMessage(
+                    SagaEventTypes.ServiceOrderApproved,
+                    serviceOrder.Id,
+                    new ServiceOrderApprovedPayload(
+                        serviceOrder.Id,
+                        serviceOrder.Parts.Select(p => new ServiceOrderApprovedPart(p.PartId, p.Quantity)).ToList()));
+
+                await _repository.AddOutboxMessageAsync(outboxMessage);
+            }
+
+            await _repository.SaveChangesAsync();
+
+            if (serviceOrder.GetCurrentStatus() != previousStatus)
+            {
+                TryRecordMetrics(serviceOrder);
+
+                await TryPublishNotificationAsync(
+                    serviceOrder.CustomerId,
+                    serviceOrder.Id,
+                    serviceOrder.GetCurrentStatus().ToString());
+            }
+
+            _logger?.LogInformation(
+                "Payment received for Service Order {ServiceOrderId}. Amount: {Amount}",
+                id,
+                serviceOrder.PaidAmount);
 
             return MapResponse(serviceOrder);
         }
@@ -235,5 +434,42 @@ namespace OSService.Application.Services
         }
 
         #endregion
+
+        private static ServiceOrderGetResponse MapResponse(
+            ServiceOrder serviceOrder)
+        {
+            return new ServiceOrderGetResponse
+            {
+                Id = serviceOrder.Id,
+                CustomerId = serviceOrder.CustomerId,
+                VehicleId = serviceOrder.VehicleId,
+                CreatedAt = serviceOrder.CreatedAt,
+                Budget = serviceOrder.Budget,
+                Inactive = serviceOrder.Inactive,
+                Status = serviceOrder.GetCurrentStatus(),
+                IsPaid = serviceOrder.IsPaid,
+                PaidAt = serviceOrder.PaidAt,
+                PaidAmount = serviceOrder.PaidAmount,
+                PaymentTransactionId = serviceOrder.PaymentTransactionId,
+                PaymentUrl = serviceOrder.PaymentUrl,
+                Parts = serviceOrder.Parts.Select(p => new ServiceOrderPartResponse
+                {
+                    Id = p.Id,
+                    PartId = p.PartId,
+                    PartName = p.PartName,
+                    Quantity = p.Quantity,
+                    UnitPrice = p.UnitPrice,
+                    TotalPrice = p.TotalPrice,
+                    StockQuantityWasEnsured = p.StockQuantityWasEnsured
+                }).ToList(),
+                Services = serviceOrder.Services.Select(s => new ServiceOrderServiceResponse
+                {
+                    Id = s.Id,
+                    ServiceId = s.ServiceId,
+                    ServiceName = s.ServiceName,
+                    Price = s.Price
+                }).ToList()
+            };
+        }
     }
 }

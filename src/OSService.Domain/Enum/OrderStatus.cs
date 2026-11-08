@@ -1,4 +1,4 @@
-﻿namespace OSService.Domain.Enum
+namespace OSService.Domain.Enum
 {
     public enum OrderStatus
     {
@@ -8,6 +8,7 @@
         InProgress = 4,
         Completed = 5,
         Delivered = 6,
-        Rejected = 7
+        Rejected = 7,
+        WaitingPayment = 8
     }
 }

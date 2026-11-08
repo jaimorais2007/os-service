@@ -1,18 +1,85 @@
-# OS Service (Ordem de Serviço)
+# OS Service (Oficina Mecânica - Tech Challenge Fase 4)
 
-[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=jaimorais2007_os-service&metric=alert_status)](https://sonarcloud.io/summary/overall?id=jaimorais2007_os-service) [![Cobertura](https://sonarcloud.io/api/project_badges/measure?project=jaimorais2007_os-service&metric=coverage)](https://sonarcloud.io/component_measures?id=jaimorais2007_os-service&metric=coverage) [![CI/CD](https://github.com/jaimorais2007/os-service/actions/workflows/ci-cd.yml/badge.svg?branch=main)](https://github.com/jaimorais2007/os-service/actions/workflows/ci-cd.yml)
+Microsserviço responsável pelo ciclo de vida completo das **Ordens de Serviço (OS)** da oficina mecânica, construído em **.NET 8** com Clean Architecture, **PostgreSQL (EF Core)**, mensageria assíncrona (**AWS SNS + SQS**) e observabilidade distribuída (**OpenTelemetry + New Relic**).
 
-## Qualidade e cobertura de testes
+---
 
-A cada PR e a cada merge na `main`, a pipeline ([`ci-templates`](https://github.com/jaimorais2007/ci-templates)) roda os testes com cobertura e:
+## Saga Pattern Coreografado (Aceite de Orçamento, Pagamento e Estoque)
 
-- **falha se a cobertura de linhas ficar abaixo de 80%** (passo "Checar cobertura mínima");
-- envia a análise ao **SonarCloud** e **aguarda o quality gate** (`sonar.qualitygate.wait=true`): se o gate reprovar, a pipeline falha;
-- publica o relatório detalhado no resumo da execução e como artefato `coverage-report-os-service` ([execuções da pipeline](https://github.com/jaimorais2007/os-service/actions/workflows/ci-cd.yml)).
+### Justificativa Arquitetural: Por que Saga Coreografada?
 
-A `main` é protegida: só aceita PR com a verificação `pipeline / Build, testes e qualidade` aprovada.
+Para coordenar as transações distribuídas entre `os-service` (PostgreSQL) e `billing-service` (DynamoDB + Mercado Pago) sem acoplamento de banco de dados nem bloqueio HTTP síncrono, adotamos o **Saga Pattern Coreografado** baseado em eventos SNS/SQS:
 
-**Evidência:** cobertura de **98,6%** no SonarCloud em 07/11/2026, com quality gate aprovado. Os selos acima mostram o valor atual. Painel: [SonarCloud — os-service](https://sonarcloud.io/summary/overall?id=jaimorais2007_os-service).
+1. **Baixo Acoplamento Temporal e de Domínio**: O `os-service` não conhece detalhes de preferências ou webhooks do Mercado Pago, nem da tabela DynamoDB de estoque; cada serviço reage apenas a eventos de domínio publicados no SNS.
+2. **Ausência de Ponto Único de Falha (SPOF)**: Diferente da Saga Orquestrada (que exige um orquestrador centralizado mantendo estado global), cada microsserviço gerencia sua própria máquina de estados local de maneira autônoma.
+3. **Transactional Outbox + Inbox Idempotente**:
+   - **Outbox Transacional (`OutboxMessage`)**: Todos os eventos publicados pela Saga (`BudgetApproved`, `ServiceOrderRejected` e `ServiceOrderApproved`) são gravados na tabela `OutboxMessage` do PostgreSQL na **mesma transação (`SaveChangesAsync()`)** da mudança de estado da `ServiceOrder` (e/ou `ProcessedSagaEvent`), eliminando o problema de *dual-write* entre banco de dados e broker SNS. O worker `OutboxPublisherBackgroundService` faz *polling* periódico em lotes com *exponential backoff* (`3s` até `60s`), publica no tópico SNS correspondente via `SnsSagaEventPublisher` e remove o registro após confirmação (ou incrementa `Attempts` e grava `LastError` em caso de falha transitória).
+   - **Inbox Idempotente (`ProcessedSagaEvent`)**: Mensagens consumidas via SQS são deduplicadas na tabela `ProcessedSagaEvent` (`EventId` único), evitando efeitos colaterais duplicados em reentregas (*at-least-once delivery*).
+4. **Rastreabilidade Ponta a Ponta**: O cabeçalho W3C `traceparent` é capturado no momento da criação do `OutboxMessage` e propagado nos atributos SNS/SQS entre `os-service`, `billing-service` e `execution-service`.
+
+---
+
+### Máquina de Estados e Transações Compensatórias
+
+Apenas os status com efeitos colaterais cruzados entre microsserviços participam da Saga (`AwaitingApproval`, `WaitingPayment`, `InProgress` e `Rejected`):
+
+```text
+[Received (1)] -> [UnderAnalysis (2)] -> [AwaitingApproval (3)] <======================+
+                                            |              |                           |
+                                 Reject()   |              | Approve()                 |
+                                            v              | Publica "BudgetApproved"  |
+                                      [Rejected (7)]       v                           |
+                                            ^      [WaitingPayment (8)]                |
+                                            |         |    |                           |
+                                 Reject()   +---------+    +-> "PaymentCreationFailed" + (Compensacao 1A)
+                         Publica "ServiceOrderRejected"    |                           |
+                                                           +-> "PaymentExpired" -------+ (Compensacao 1B)
+                                                           |                           |
+                                                           +-> "PaymentConfirmed"      |
+                                                                 |                     |
+                                           Sem pecas na OS ------+-> [InProgress (4)]  |
+                                                                 |          |          |
+                                           Com pecas: publica ---+          |          |
+                                           "ServiceOrderApproved"           |          |
+                                                 |                          |          |
+                                                 +-> Estoque OK             |          |
+                                                 |   ("PartStockEnsured") --+          |
+                                                 |                          |          |
+                                                 +-> Falta estoque:         |          |
+                                                     Billing estorna MP     |          |
+                                                     ("PaymentRefunded") --------------+ (Compensacao 2)
+                                                                            |
+                                                                            v
+                                                                     [Completed (5)] -> [Delivered (6)]
+```
+
+### Eventos da Saga no `os-service`
+
+| Evento | Direção | Tópico SNS | Ação / Compensação no `os-service` |
+|---|---|---|---|
+| `BudgetApproved` | Publicado (Outbox) | `oficina-BudgetApproved` | Gravado atomicamente na tabela `OutboxMessage` em `POST /api/ServiceOrders/{id}/approve` ao mudar para `WaitingPayment`, e publicado no SNS pelo `OutboxPublisherBackgroundService`. |
+| `PaymentCreated` | Consumido | `oficina-PaymentCreated` | Armazena `PaymentUrl` e `PaymentTransactionId` na OS. |
+| `PaymentCreationFailed` | Consumido | `oficina-PaymentCreationFailed` | **Compensação 1A**: Reverte a OS de `WaitingPayment` para `AwaitingApproval`. |
+| `PaymentExpired` | Consumido | `oficina-PaymentExpired` | **Compensação 1B**: Reverte a OS de `WaitingPayment` para `AwaitingApproval` após vencimento/recusa no gateway. |
+| `ServiceOrderRejected` | Publicado (Outbox) | `oficina-ServiceOrderRejected` | Gravado no `OutboxMessage` quando o cliente recusa a OS durante `WaitingPayment`, cancelando o pagamento pendente no Billing. |
+| `PaymentConfirmed` | Consumido | `oficina-PaymentConfirmed` | Marca `IsPaid = true`; se não houver peças avança para `InProgress`, caso contrário grava `ServiceOrderApproved` no `OutboxMessage` na mesma transação. |
+| `ServiceOrderApproved` | Publicado (Outbox) | `oficina-ServiceOrderApproved` | Solicita reserva e baixa atômica das peças da OS paga no `billing-service`. |
+| `PartStockEnsured` | Consumido | `oficina-PartStockEnsured` | Marca `StockQuantityWasEnsured = true` na peça; quando todas estiverem garantidas, avança a OS para `InProgress`. |
+| `PaymentRefunded` | Consumido | `oficina-PaymentRefunded` | **Compensação 2**: Limpa `IsPaid = false`, reseta flags de estoque das peças e retroage a OS para `AwaitingApproval`. |
+
+---
+
+## Configuração AWS / Kubernetes
+
+Variáveis definidas em `k8s/deployment.yaml` (secret `os-service-secret`):
+
+- `ConnectionStrings__DefaultConnection` (`CONNECTION_STRING`): PostgreSQL do `os-service`.
+- `AWS__Region`: `us-east-1`.
+- `AWS__SqsQueueUrl` (`SQS_QUEUE_URL`): Fila de notificações de mudança de status consumida pelo `execution-service` (envio de e-mails).
+- `AWS__SnsTopicArnPrefix`: `arn:aws:sns:us-east-1:168126498555:oficina`.
+- `AWS__SagaSqsQueueUrl` (`SAGA_SQS_QUEUE_URL`): Fila SQS do `os-service` inscrita nos tópicos de retorno do `billing-service`.
+
+---
 
 ## Observabilidade (OpenTelemetry + New Relic)
 

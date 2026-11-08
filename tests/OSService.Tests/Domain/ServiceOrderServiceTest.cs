@@ -167,7 +167,7 @@ namespace OSService.Tests.Application
 
             var result = await _service.ApproveAsync(serviceOrder.Id);
 
-            Assert.Equal(OrderStatus.InProgress, result.Status);
+            Assert.Equal(OrderStatus.WaitingPayment, result.Status);
 
             _repositoryMock.Verify(
                 x => x.SaveChangesAsync(),
@@ -201,6 +201,7 @@ namespace OSService.Tests.Application
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis(350m);
             serviceOrder.Approve();
+            serviceOrder.ConfirmPayment("TX-100");
 
             _repositoryMock
                 .Setup(x => x.GetByIdAsync(serviceOrder.Id))
@@ -222,6 +223,7 @@ namespace OSService.Tests.Application
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis(350m);
             serviceOrder.Approve();
+            serviceOrder.ConfirmPayment("TX-100");
             serviceOrder.FinishExecution(false);
 
             _repositoryMock
@@ -379,6 +381,269 @@ namespace OSService.Tests.Application
 
             Assert.NotNull(result);
             Assert.Equal(OrderStatus.UnderAnalysis, result.Status);
+        }
+
+        [Fact]
+        public async Task GetByStatusAsync_ShouldReturnFilteredOrders()
+        {
+            var serviceOrder = CreateServiceOrder();
+
+            _repositoryMock
+                .Setup(x => x.GetByStatusAsync(OrderStatus.Received))
+                .ReturnsAsync(new List<ServiceOrder> { serviceOrder });
+
+            var result = await _service.GetByStatusAsync(OrderStatus.Received);
+
+            Assert.Single(result);
+            Assert.Equal(serviceOrder.Id, result.First().Id);
+        }
+
+        [Fact]
+        public async Task GetAllAsync_WithStatus_ShouldReturnFilteredOrders()
+        {
+            var serviceOrder = CreateServiceOrder();
+
+            _repositoryMock
+                .Setup(x => x.GetAllAsync(OrderStatus.Received))
+                .ReturnsAsync(new List<ServiceOrder> { serviceOrder });
+
+            var result = await _service.GetAllAsync(OrderStatus.Received);
+
+            Assert.Single(result);
+            Assert.Equal(serviceOrder.Id, result.First().Id);
+        }
+
+        [Fact]
+        public async Task AddPartAsync_ShouldAddPartAndSave()
+        {
+            var serviceOrder = CreateServiceOrder();
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var partRequest = new ServiceOrderAddPartRequest
+            {
+                PartId = Guid.NewGuid(),
+                PartName = "Filter",
+                Quantity = 2,
+                UnitPrice = 35m
+            };
+
+            var result = await _service.AddPartAsync(serviceOrder.Id, partRequest);
+
+            Assert.Single(result.Parts);
+            Assert.Equal(partRequest.PartId, result.Parts.First().PartId);
+            Assert.Equal(70m, result.Parts.First().TotalPrice);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task RemovePartAsync_ShouldRemovePartAndSave()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var partId = Guid.NewGuid();
+            serviceOrder.AddPart(partId, 1, 50m);
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var result = await _service.RemovePartAsync(serviceOrder.Id, partId);
+
+            Assert.Empty(result.Parts);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task AddServiceAsync_ShouldAddServiceAndSave()
+        {
+            var serviceOrder = CreateServiceOrder();
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var serviceRequest = new ServiceOrderAddServiceRequest
+            {
+                ServiceId = Guid.NewGuid(),
+                ServiceName = "Alignment",
+                Price = 120m
+            };
+
+            var result = await _service.AddServiceAsync(serviceOrder.Id, serviceRequest);
+
+            Assert.Single(result.Services);
+            Assert.Equal(serviceRequest.ServiceId, result.Services.First().ServiceId);
+            Assert.Equal(120m, result.Services.First().Price);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task RemoveServiceAsync_ShouldRemoveServiceAndSave()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var serviceId = Guid.NewGuid();
+            serviceOrder.AddService(serviceId, 100m);
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var result = await _service.RemoveServiceAsync(serviceOrder.Id, serviceId);
+
+            Assert.Empty(result.Services);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task CreateBudgetAsync_ShouldCreateBudgetAndSave()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.AddPart(Guid.NewGuid(), 2, 50m);
+            serviceOrder.AddService(Guid.NewGuid(), 100m);
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var result = await _service.CreateBudgetAsync(serviceOrder.Id);
+
+            Assert.Equal(200m, result.Budget);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task ReceivePaymentAsync_ShouldRecordPaymentAndSave()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(300m);
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var paymentRequest = new ServiceOrderPaymentRequest
+            {
+                Amount = 300m,
+                TransactionId = "MP-987"
+            };
+
+            var result = await _service.ReceivePaymentAsync(serviceOrder.Id, paymentRequest);
+
+            Assert.True(result.IsPaid);
+            Assert.Equal(300m, result.PaidAmount);
+            Assert.Equal("MP-987", result.PaymentTransactionId);
+            Assert.Equal(OrderStatus.InProgress, result.Status);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task EnsurePartStockAsync_ShouldEnsureStockAndSave()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var partId = Guid.NewGuid();
+            serviceOrder.AddPart(partId, 1, 50m, stockQuantityWasEnsured: false);
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var result = await _service.EnsurePartStockAsync(serviceOrder.Id, partId);
+
+            Assert.True(result.Parts.First().StockQuantityWasEnsured);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task ApproveAsync_ShouldStageBudgetApprovedOutboxMessageInSameSaveChanges()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var partId = Guid.NewGuid();
+            var serviceId = Guid.NewGuid();
+            serviceOrder.AddPart(partId, 2, 75m, "Belt");
+            serviceOrder.AddService(serviceId, 200m, "Replacement");
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis();
+
+            OutboxMessage? capturedOutbox = null;
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+            _repositoryMock
+                .Setup(x => x.AddOutboxMessageAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
+                .Callback<OutboxMessage, CancellationToken>((msg, _) => capturedOutbox = msg)
+                .Returns(Task.CompletedTask);
+
+            var result = await _service.ApproveAsync(serviceOrder.Id);
+
+            Assert.Equal(OrderStatus.WaitingPayment, result.Status);
+            Assert.NotNull(capturedOutbox);
+            Assert.Equal(OSService.Application.Saga.SagaEventTypes.BudgetApproved, capturedOutbox.EventType);
+            Assert.Equal(serviceOrder.Id, capturedOutbox.CorrelationId);
+
+            var envelope = System.Text.Json.JsonSerializer.Deserialize<OSService.Application.Saga.EventEnvelope>(
+                capturedOutbox.Content,
+                OSService.Application.Saga.SagaEventJson.Options);
+            Assert.NotNull(envelope);
+            var payload = System.Text.Json.JsonSerializer.Deserialize<OSService.Application.Saga.BudgetApprovedPayload>(
+                envelope.Payload,
+                OSService.Application.Saga.SagaEventJson.Options);
+            Assert.NotNull(payload);
+            Assert.Equal(serviceOrder.Id, payload.ServiceOrderId);
+            Assert.Equal(350m, payload.TotalAmount);
+            Assert.Single(payload.ServiceIds!);
+            Assert.Single(payload.Parts!);
+
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task RejectAsync_FromWaitingPayment_ShouldStageServiceOrderRejectedOutboxMessage()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(300m);
+            serviceOrder.Approve();
+
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var result = await _service.RejectAsync(serviceOrder.Id);
+
+            Assert.Equal(OrderStatus.Rejected, result.Status);
+            _repositoryMock.Verify(
+                x => x.AddOutboxMessageAsync(
+                    It.Is<OutboxMessage>(m =>
+                        m.EventType == OSService.Application.Saga.SagaEventTypes.ServiceOrderRejected &&
+                        m.CorrelationId == serviceOrder.Id),
+                    It.IsAny<CancellationToken>()),
+                Times.Once);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task RejectAsync_FromAwaitingApproval_ShouldNotStageServiceOrderRejectedOutboxMessage()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(300m);
+
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var result = await _service.RejectAsync(serviceOrder.Id);
+
+            Assert.Equal(OrderStatus.Rejected, result.Status);
+            _repositoryMock.Verify(
+                x => x.AddOutboxMessageAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()),
+                Times.Never);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task ReceivePaymentAsync_FromWaitingPaymentWithUnensuredParts_ShouldStageServiceOrderApprovedOutboxMessage()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var partId = Guid.NewGuid();
+            serviceOrder.AddPart(partId, 2, 100m, "Oil Filter", stockQuantityWasEnsured: false);
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(200m);
+            serviceOrder.Approve();
+
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var result = await _service.ReceivePaymentAsync(
+                serviceOrder.Id,
+                new ServiceOrderPaymentRequest { Amount = 200m, TransactionId = "TX-MANUAL" });
+
+            Assert.Equal(OrderStatus.WaitingPayment, result.Status);
+            Assert.True(result.IsPaid);
+            _repositoryMock.Verify(
+                x => x.AddOutboxMessageAsync(
+                    It.Is<OutboxMessage>(m =>
+                        m.EventType == OSService.Application.Saga.SagaEventTypes.ServiceOrderApproved &&
+                        m.CorrelationId == serviceOrder.Id),
+                    It.IsAny<CancellationToken>()),
+                Times.Once);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
         }
     }
 }
