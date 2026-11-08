@@ -27,6 +27,7 @@ builder.Services.AddDbContext<ServiceOrderDbContext>(options =>
 });
 
 builder.Services.AddScoped<IServiceOrderRepository, ServiceOrderRepository>();
+builder.Services.AddScoped<IOutboxRepository, OutboxRepository>();
 
 var awsRegion = builder.Configuration["AWS:Region"];
 if (!string.IsNullOrWhiteSpace(awsRegion))
@@ -41,6 +42,7 @@ builder.Services.AddScoped<ISagaEventPublisher, SnsSagaEventPublisher>();
 builder.Services.AddScoped<IServiceOrderMetrics, ServiceOrderMetrics>();
 builder.Services.AddScoped<ServiceOrderService>();
 builder.Services.AddScoped<SagaEventProcessor>();
+builder.Services.AddHostedService<OutboxPublisherBackgroundService>();
 builder.Services.AddHostedService<SagaSqsConsumerBackgroundService>();
 
 // Configura OpenTelemetry (traces, metricas e logs) com exportacao OTLP para o New Relic

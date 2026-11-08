@@ -11,6 +11,7 @@ using Moq;
 using OSService.Application.Saga;
 using OSService.Domain.Entities;
 using OSService.Domain.Enum;
+using OSService.Domain.Interface;
 using OSService.Domain.Interfaces;
 using OSService.Infrastructure.Messaging;
 using Xunit;
@@ -159,5 +160,145 @@ public class SagaMessagingTests
             CancellationToken.None);
 
         sqsMock.Verify(x => x.DeleteMessageAsync(It.IsAny<DeleteMessageRequest>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task SnsSagaEventPublisher_PublishRawAsync_WithExplicitTraceParent_ShouldForwardTraceParentAttribute()
+    {
+        var snsMock = new Mock<IAmazonSimpleNotificationService>();
+        PublishRequest? capturedRequest = null;
+
+        snsMock
+            .Setup(x => x.PublishAsync(It.IsAny<PublishRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<PublishRequest, CancellationToken>((req, _) => capturedRequest = req)
+            .ReturnsAsync(new PublishResponse { MessageId = "sns-raw-1" });
+
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AWS:SnsTopicArnPrefix"] = "arn:aws:sns:us-east-1:123456789012:oficina"
+            })
+            .Build();
+
+        var publisher = new SnsSagaEventPublisher(
+            config,
+            NullLogger<SnsSagaEventPublisher>.Instance,
+            snsMock.Object);
+
+        const string traceParent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        await publisher.PublishRawAsync("BudgetApproved", "{\"eventId\":\"1\"}", traceParent);
+
+        Assert.NotNull(capturedRequest);
+        Assert.Equal("arn:aws:sns:us-east-1:123456789012:oficina-BudgetApproved", capturedRequest.TopicArn);
+        Assert.Equal("BudgetApproved", capturedRequest.MessageAttributes["eventType"].StringValue);
+        Assert.Equal(traceParent, capturedRequest.MessageAttributes["traceparent"].StringValue);
+    }
+
+    [Fact]
+    public async Task OutboxPublisherBackgroundService_PublishPendingAsync_ShouldPublishAndMarkPublished()
+    {
+        var outboxMessage = new OutboxMessage(
+            Guid.NewGuid(),
+            SagaEventTypes.BudgetApproved,
+            Guid.NewGuid(),
+            "{\"eventType\":\"BudgetApproved\"}",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+
+        var outboxRepoMock = new Mock<IOutboxRepository>();
+        outboxRepoMock
+            .Setup(x => x.GetPendingAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([outboxMessage]);
+
+        var sagaPublisherMock = new Mock<ISagaEventPublisher>();
+
+        var services = new ServiceCollection();
+        services.AddScoped(_ => outboxRepoMock.Object);
+        services.AddScoped(_ => sagaPublisherMock.Object);
+        using var provider = services.BuildServiceProvider();
+
+        var worker = new OutboxPublisherBackgroundService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<OutboxPublisherBackgroundService>.Instance);
+
+        var allPublished = await worker.PublishPendingAsync(CancellationToken.None);
+
+        Assert.True(allPublished);
+        sagaPublisherMock.Verify(
+            x => x.PublishRawAsync(
+                outboxMessage.EventType,
+                outboxMessage.Content,
+                outboxMessage.TraceParent,
+                It.IsAny<CancellationToken>()),
+            Times.Once);
+        outboxRepoMock.Verify(
+            x => x.MarkPublishedAsync(outboxMessage.Id, It.IsAny<CancellationToken>()),
+            Times.Once);
+    }
+
+    [Fact]
+    public async Task OutboxPublisherBackgroundService_WhenPublisherFails_ShouldMarkFailedAndReturnFalse()
+    {
+        var outboxMessage = new OutboxMessage(
+            Guid.NewGuid(),
+            SagaEventTypes.ServiceOrderApproved,
+            Guid.NewGuid(),
+            "{\"eventType\":\"ServiceOrderApproved\"}");
+
+        var outboxRepoMock = new Mock<IOutboxRepository>();
+        outboxRepoMock
+            .Setup(x => x.GetPendingAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([outboxMessage]);
+
+        var sagaPublisherMock = new Mock<ISagaEventPublisher>();
+        sagaPublisherMock
+            .Setup(x => x.PublishRawAsync(
+                It.IsAny<string>(),
+                It.IsAny<string>(),
+                It.IsAny<string?>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("SNS unreachable"));
+
+        var services = new ServiceCollection();
+        services.AddScoped(_ => outboxRepoMock.Object);
+        services.AddScoped(_ => sagaPublisherMock.Object);
+        using var provider = services.BuildServiceProvider();
+
+        var worker = new OutboxPublisherBackgroundService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<OutboxPublisherBackgroundService>.Instance);
+
+        var allPublished = await worker.PublishPendingAsync(CancellationToken.None);
+
+        Assert.False(allPublished);
+        outboxRepoMock.Verify(
+            x => x.MarkFailedAsync(outboxMessage.Id, "SNS unreachable", It.IsAny<CancellationToken>()),
+            Times.Once);
+        outboxRepoMock.Verify(
+            x => x.MarkPublishedAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    public async Task OutboxPublisherBackgroundService_StartAndStopAsync_ShouldRunCleanly()
+    {
+        var outboxRepoMock = new Mock<IOutboxRepository>();
+        outboxRepoMock
+            .Setup(x => x.GetPendingAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([]);
+
+        var services = new ServiceCollection();
+        services.AddScoped(_ => outboxRepoMock.Object);
+        services.AddScoped(_ => new Mock<ISagaEventPublisher>().Object);
+        using var provider = services.BuildServiceProvider();
+
+        var worker = new OutboxPublisherBackgroundService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<OutboxPublisherBackgroundService>.Instance);
+
+        await worker.StartAsync(CancellationToken.None);
+        await Task.Delay(50);
+        await worker.StopAsync(CancellationToken.None);
+
+        outboxRepoMock.Verify(x => x.GetPendingAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.AtLeastOnce);
     }
 }

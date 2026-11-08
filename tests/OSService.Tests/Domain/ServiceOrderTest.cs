@@ -463,5 +463,34 @@ namespace OSService.Tests.Domain
             Assert.Throws<DomainException>(() => new ProcessedSagaEvent(Guid.Empty, "PaymentConfirmed", Guid.NewGuid()));
             Assert.Throws<DomainException>(() => new ProcessedSagaEvent(Guid.NewGuid(), "", Guid.NewGuid()));
         }
+
+        [Fact]
+        public void OutboxMessage_ValidationAndRecordFailure_ShouldEnforceInvariantsAndTruncateErrors()
+        {
+            Assert.Throws<DomainException>(() => new OutboxMessage(Guid.Empty, "BudgetApproved", Guid.NewGuid(), "{}"));
+            Assert.Throws<DomainException>(() => new OutboxMessage(Guid.NewGuid(), "", Guid.NewGuid(), "{}"));
+            Assert.Throws<DomainException>(() => new OutboxMessage(Guid.NewGuid(), "BudgetApproved", Guid.NewGuid(), ""));
+
+            var message = new OutboxMessage(
+                Guid.NewGuid(),
+                "BudgetApproved",
+                Guid.NewGuid(),
+                "{\"eventId\":\"123\"}",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+
+            Assert.Equal(0, message.Attempts);
+            Assert.Null(message.LastError);
+
+            var oversizedError = new string('E', OutboxMessage.MaxErrorLength + 250);
+            message.RecordFailure(oversizedError);
+
+            Assert.Equal(1, message.Attempts);
+            Assert.NotNull(message.LastError);
+            Assert.Equal(OutboxMessage.MaxErrorLength, message.LastError.Length);
+
+            message.RecordFailure("SNS timeout");
+            Assert.Equal(2, message.Attempts);
+            Assert.Equal("SNS timeout", message.LastError);
+        }
     }
 }

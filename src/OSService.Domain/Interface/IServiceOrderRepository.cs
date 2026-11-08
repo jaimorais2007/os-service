@@ -19,6 +19,8 @@ namespace OSService.Domain.Interfaces
 
         Task AddProcessedEventAsync(ProcessedSagaEvent processedEvent, CancellationToken cancellationToken = default);
 
+        Task AddOutboxMessageAsync(OutboxMessage outboxMessage, CancellationToken cancellationToken = default);
+
         Task SaveChangesAsync();
     }
 }

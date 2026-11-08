@@ -537,13 +537,8 @@ namespace OSService.Tests.Application
         }
 
         [Fact]
-        public async Task ApproveAsync_WithSagaPublisher_ShouldPublishBudgetApproved()
+        public async Task ApproveAsync_ShouldStageBudgetApprovedOutboxMessageInSameSaveChanges()
         {
-            var sagaPublisherMock = new Mock<OSService.Domain.Interface.ISagaEventPublisher>();
-            var serviceWithSaga = new ServiceOrderService(
-                _repositoryMock.Object,
-                sagaEventPublisher: sagaPublisherMock.Object);
-
             var serviceOrder = CreateServiceOrder();
             var partId = Guid.NewGuid();
             var serviceId = Guid.NewGuid();
@@ -552,61 +547,39 @@ namespace OSService.Tests.Application
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis();
 
+            OutboxMessage? capturedOutbox = null;
             _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+            _repositoryMock
+                .Setup(x => x.AddOutboxMessageAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
+                .Callback<OutboxMessage, CancellationToken>((msg, _) => capturedOutbox = msg)
+                .Returns(Task.CompletedTask);
 
-            var result = await serviceWithSaga.ApproveAsync(serviceOrder.Id);
+            var result = await _service.ApproveAsync(serviceOrder.Id);
 
             Assert.Equal(OrderStatus.WaitingPayment, result.Status);
-            sagaPublisherMock.Verify(
-                x => x.PublishAsync(
-                    OSService.Application.Saga.SagaEventTypes.BudgetApproved,
-                    serviceOrder.Id,
-                    It.Is<OSService.Application.Saga.BudgetApprovedPayload>(p =>
-                        p.ServiceOrderId == serviceOrder.Id &&
-                        p.TotalAmount == 350m &&
-                        p.ServiceIds != null && p.ServiceIds.Count == 1 &&
-                        p.Parts != null && p.Parts.Count == 1),
-                    It.IsAny<CancellationToken>()),
-                Times.Once);
+            Assert.NotNull(capturedOutbox);
+            Assert.Equal(OSService.Application.Saga.SagaEventTypes.BudgetApproved, capturedOutbox.EventType);
+            Assert.Equal(serviceOrder.Id, capturedOutbox.CorrelationId);
+
+            var envelope = System.Text.Json.JsonSerializer.Deserialize<OSService.Application.Saga.EventEnvelope>(
+                capturedOutbox.Content,
+                OSService.Application.Saga.SagaEventJson.Options);
+            Assert.NotNull(envelope);
+            var payload = System.Text.Json.JsonSerializer.Deserialize<OSService.Application.Saga.BudgetApprovedPayload>(
+                envelope.Payload,
+                OSService.Application.Saga.SagaEventJson.Options);
+            Assert.NotNull(payload);
+            Assert.Equal(serviceOrder.Id, payload.ServiceOrderId);
+            Assert.Equal(350m, payload.TotalAmount);
+            Assert.Single(payload.ServiceIds!);
+            Assert.Single(payload.Parts!);
+
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
         }
 
         [Fact]
-        public async Task ApproveAsync_WhenSagaPublisherThrows_ShouldRevertToAwaitingApproval()
+        public async Task RejectAsync_FromWaitingPayment_ShouldStageServiceOrderRejectedOutboxMessage()
         {
-            var sagaPublisherMock = new Mock<OSService.Domain.Interface.ISagaEventPublisher>();
-            sagaPublisherMock
-                .Setup(x => x.PublishAsync(
-                    OSService.Application.Saga.SagaEventTypes.BudgetApproved,
-                    It.IsAny<Guid>(),
-                    It.IsAny<OSService.Application.Saga.BudgetApprovedPayload>(),
-                    It.IsAny<CancellationToken>()))
-                .ThrowsAsync(new InvalidOperationException("SNS unavailable"));
-
-            var serviceWithSaga = new ServiceOrderService(
-                _repositoryMock.Object,
-                sagaEventPublisher: sagaPublisherMock.Object);
-
-            var serviceOrder = CreateServiceOrder();
-            serviceOrder.StartDiagnostics();
-            serviceOrder.FinishAnalysis(300m);
-
-            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
-
-            await Assert.ThrowsAsync<OSService.Domain.Exceptions.DomainException>(
-                () => serviceWithSaga.ApproveAsync(serviceOrder.Id));
-
-            Assert.Equal(OrderStatus.AwaitingApproval, serviceOrder.GetCurrentStatus());
-            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Exactly(2));
-        }
-
-        [Fact]
-        public async Task RejectAsync_FromWaitingPayment_ShouldPublishServiceOrderRejected()
-        {
-            var sagaPublisherMock = new Mock<OSService.Domain.Interface.ISagaEventPublisher>();
-            var serviceWithSaga = new ServiceOrderService(
-                _repositoryMock.Object,
-                sagaEventPublisher: sagaPublisherMock.Object);
-
             var serviceOrder = CreateServiceOrder();
             serviceOrder.StartDiagnostics();
             serviceOrder.FinishAnalysis(300m);
@@ -614,16 +587,63 @@ namespace OSService.Tests.Application
 
             _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
 
-            var result = await serviceWithSaga.RejectAsync(serviceOrder.Id);
+            var result = await _service.RejectAsync(serviceOrder.Id);
 
             Assert.Equal(OrderStatus.Rejected, result.Status);
-            sagaPublisherMock.Verify(
-                x => x.PublishAsync(
-                    OSService.Application.Saga.SagaEventTypes.ServiceOrderRejected,
-                    serviceOrder.Id,
-                    It.Is<OSService.Application.Saga.ServiceOrderRejectedPayload>(p => p.ServiceOrderId == serviceOrder.Id),
+            _repositoryMock.Verify(
+                x => x.AddOutboxMessageAsync(
+                    It.Is<OutboxMessage>(m =>
+                        m.EventType == OSService.Application.Saga.SagaEventTypes.ServiceOrderRejected &&
+                        m.CorrelationId == serviceOrder.Id),
                     It.IsAny<CancellationToken>()),
                 Times.Once);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task RejectAsync_FromAwaitingApproval_ShouldNotStageServiceOrderRejectedOutboxMessage()
+        {
+            var serviceOrder = CreateServiceOrder();
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(300m);
+
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var result = await _service.RejectAsync(serviceOrder.Id);
+
+            Assert.Equal(OrderStatus.Rejected, result.Status);
+            _repositoryMock.Verify(
+                x => x.AddOutboxMessageAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()),
+                Times.Never);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
+        }
+
+        [Fact]
+        public async Task ReceivePaymentAsync_FromWaitingPaymentWithUnensuredParts_ShouldStageServiceOrderApprovedOutboxMessage()
+        {
+            var serviceOrder = CreateServiceOrder();
+            var partId = Guid.NewGuid();
+            serviceOrder.AddPart(partId, 2, 100m, "Oil Filter", stockQuantityWasEnsured: false);
+            serviceOrder.StartDiagnostics();
+            serviceOrder.FinishAnalysis(200m);
+            serviceOrder.Approve();
+
+            _repositoryMock.Setup(x => x.GetByIdAsync(serviceOrder.Id)).ReturnsAsync(serviceOrder);
+
+            var result = await _service.ReceivePaymentAsync(
+                serviceOrder.Id,
+                new ServiceOrderPaymentRequest { Amount = 200m, TransactionId = "TX-MANUAL" });
+
+            Assert.Equal(OrderStatus.WaitingPayment, result.Status);
+            Assert.True(result.IsPaid);
+            _repositoryMock.Verify(
+                x => x.AddOutboxMessageAsync(
+                    It.Is<OutboxMessage>(m =>
+                        m.EventType == OSService.Application.Saga.SagaEventTypes.ServiceOrderApproved &&
+                        m.CorrelationId == serviceOrder.Id),
+                    It.IsAny<CancellationToken>()),
+                Times.Once);
+            _repositoryMock.Verify(x => x.SaveChangesAsync(), Times.Once);
         }
     }
 }

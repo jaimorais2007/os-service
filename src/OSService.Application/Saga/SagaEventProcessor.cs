@@ -10,20 +10,17 @@ namespace OSService.Application.Saga
     public class SagaEventProcessor
     {
         private readonly IServiceOrderRepository _repository;
-        private readonly ISagaEventPublisher? _sagaEventPublisher;
         private readonly IServiceOrderNotificationPublisher? _notificationPublisher;
         private readonly IServiceOrderMetrics? _metrics;
         private readonly ILogger<SagaEventProcessor>? _logger;
 
         public SagaEventProcessor(
             IServiceOrderRepository repository,
-            ISagaEventPublisher? sagaEventPublisher = null,
             IServiceOrderNotificationPublisher? notificationPublisher = null,
             IServiceOrderMetrics? metrics = null,
             ILogger<SagaEventProcessor>? logger = null)
         {
             _repository = repository;
-            _sagaEventPublisher = sagaEventPublisher;
             _notificationPublisher = notificationPublisher;
             _metrics = metrics;
             _logger = logger;
@@ -199,7 +196,7 @@ namespace OSService.Application.Saga
 
             serviceOrder.ConfirmPayment(payload.GatewayTransactionId);
 
-            if (hasPendingParts && _sagaEventPublisher != null)
+            if (hasPendingParts)
             {
                 var approvedPayload = new ServiceOrderApprovedPayload(
                     serviceOrder.Id,
@@ -207,11 +204,12 @@ namespace OSService.Application.Saga
                         .Select(p => new ServiceOrderApprovedPart(p.PartId, p.Quantity))
                         .ToList());
 
-                await _sagaEventPublisher.PublishAsync(
+                var outboxMessage = SagaEventJson.CreateOutboxMessage(
                     SagaEventTypes.ServiceOrderApproved,
                     serviceOrder.Id,
-                    approvedPayload,
-                    cancellationToken);
+                    approvedPayload);
+
+                await _repository.AddOutboxMessageAsync(outboxMessage, cancellationToken);
             }
 
             await MarkProcessedAndSaveAsync(envelope, cancellationToken);

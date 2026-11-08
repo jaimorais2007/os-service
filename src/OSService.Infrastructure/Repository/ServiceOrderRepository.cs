@@ -75,6 +75,13 @@ namespace OSService.Infrastructure.Repositories
             await _context.ProcessedSagaEvents.AddAsync(processedEvent, cancellationToken);
         }
 
+        public async Task AddOutboxMessageAsync(
+            OutboxMessage outboxMessage,
+            CancellationToken cancellationToken = default)
+        {
+            await _context.OutboxMessages.AddAsync(outboxMessage, cancellationToken);
+        }
+
         public async Task SaveChangesAsync()
         {
             await _context.SaveChangesAsync();

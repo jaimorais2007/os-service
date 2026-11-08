@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using OSService.Api.Controllers;
@@ -12,6 +13,7 @@ using OSService.Domain.Entities;
 using OSService.Domain.Enum;
 using OSService.Domain.Interface;
 using OSService.Infrastructure.Contexts;
+using OSService.Infrastructure.Messaging;
 using OSService.Infrastructure.Repositories;
 using Reqnroll;
 using Xunit;
@@ -24,6 +26,9 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
     private readonly SqliteConnection _connection;
     private readonly ServiceOrderDbContext _dbContext;
     private readonly ServiceOrderRepository _repository;
+    private readonly OutboxRepository _outboxRepository;
+    private readonly ServiceProvider _outboxServiceProvider;
+    private readonly OutboxPublisherBackgroundService _outboxPublisher;
     private readonly Mock<IServiceOrderNotificationPublisher> _notificationPublisherMock;
     private readonly Mock<IServiceOrderMetrics> _metricsMock;
     private readonly Mock<ISagaEventPublisher> _sagaPublisherMock;
@@ -51,35 +56,40 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
         _dbContext.Database.EnsureCreated();
 
         _repository = new ServiceOrderRepository(_dbContext);
+        _outboxRepository = new OutboxRepository(_dbContext);
         _notificationPublisherMock = new Mock<IServiceOrderNotificationPublisher>();
         _metricsMock = new Mock<IServiceOrderMetrics>();
         _sagaPublisherMock = new Mock<ISagaEventPublisher>();
 
         _sagaPublisherMock
-            .Setup(x => x.PublishAsync(
+            .Setup(x => x.PublishRawAsync(
                 It.IsAny<string>(),
-                It.IsAny<Guid>(),
-                It.IsAny<It.IsAnyType>(),
+                It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<CancellationToken>()))
-            .Callback(new InvocationAction(invocation =>
+            .Callback<string, string, string?, CancellationToken>((eventType, _, _, _) =>
             {
-                if (invocation.Arguments[0] is string eventType)
-                {
-                    _publishedSagaEvents.Add(eventType);
-                }
-            }))
+                _publishedSagaEvents.Add(eventType);
+            })
             .Returns(Task.CompletedTask);
+
+        var services = new ServiceCollection();
+        services.AddScoped<IOutboxRepository>(_ => _outboxRepository);
+        services.AddSingleton(_sagaPublisherMock.Object);
+        _outboxServiceProvider = services.BuildServiceProvider();
+
+        _outboxPublisher = new OutboxPublisherBackgroundService(
+            _outboxServiceProvider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<OutboxPublisherBackgroundService>.Instance);
 
         _serviceOrderService = new ServiceOrderService(
             _repository,
             _notificationPublisherMock.Object,
             NullLogger<ServiceOrderService>.Instance,
-            _metricsMock.Object,
-            _sagaPublisherMock.Object);
+            _metricsMock.Object);
 
         _sagaEventProcessor = new SagaEventProcessor(
             _repository,
-            _sagaPublisherMock.Object,
             _notificationPublisherMock.Object,
             _metricsMock.Object,
             NullLogger<SagaEventProcessor>.Instance);
@@ -338,8 +348,9 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
     }
 
     [Then(@"the Saga event ""(.*)"" should have been published")]
-    public void ThenTheSagaEventShouldHaveBeenPublished(string expectedEventType)
+    public async Task ThenTheSagaEventShouldHaveBeenPublished(string expectedEventType)
     {
+        await _outboxPublisher.PublishPendingAsync(CancellationToken.None);
         Assert.Contains(expectedEventType, _publishedSagaEvents);
     }
 
@@ -428,6 +439,7 @@ public sealed class ServiceOrderLifecycleSteps : IDisposable
 
     public void Dispose()
     {
+        _outboxServiceProvider.Dispose();
         _dbContext.Dispose();
         _connection.Dispose();
     }

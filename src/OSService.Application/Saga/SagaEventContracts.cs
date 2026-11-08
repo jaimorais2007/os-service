@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using OSService.Domain.Entities;
 
 namespace OSService.Application.Saga
 {
@@ -42,6 +44,30 @@ namespace OSService.Application.Saga
                 DateTime.UtcNow,
                 correlationId,
                 JsonSerializer.SerializeToElement(payload, Options));
+        }
+
+        public static OutboxMessage CreateOutboxMessage<TPayload>(
+            string eventType,
+            Guid correlationId,
+            TPayload payload)
+        {
+            var id = Guid.NewGuid();
+            var occurredAt = DateTime.UtcNow;
+            var envelope = new EventEnvelope(
+                id,
+                eventType,
+                occurredAt,
+                correlationId,
+                JsonSerializer.SerializeToElement(payload, Options));
+
+            var content = JsonSerializer.Serialize(envelope, Options);
+            return new OutboxMessage(
+                id,
+                eventType,
+                correlationId,
+                content,
+                Activity.Current?.Id,
+                occurredAt);
         }
     }
 

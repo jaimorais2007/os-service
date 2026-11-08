@@ -25,22 +25,30 @@ public class SnsSagaEventPublisher : ISagaEventPublisher
         _sns = sns;
     }
 
-    public async Task PublishAsync<TPayload>(
+    public Task PublishAsync<TPayload>(
         string eventType,
         Guid correlationId,
         TPayload payload,
         CancellationToken cancellationToken = default)
     {
-        var topicArnPrefix = _configuration["AWS:SnsTopicArnPrefix"];
         var envelope = SagaEventJson.CreateEnvelope(eventType, correlationId, payload);
         var content = JsonSerializer.Serialize(envelope, SagaEventJson.Options);
+        return PublishRawAsync(eventType, content, Activity.Current?.Id, cancellationToken);
+    }
+
+    public async Task PublishRawAsync(
+        string eventType,
+        string content,
+        string? traceParent = null,
+        CancellationToken cancellationToken = default)
+    {
+        var topicArnPrefix = _configuration["AWS:SnsTopicArnPrefix"];
 
         if (_sns is null || string.IsNullOrWhiteSpace(topicArnPrefix))
         {
             _logger.LogInformation(
-                "[Simulated SNS] Saga event {EventType} (CorrelationId: {CorrelationId}): {Content}",
+                "[Simulated SNS] Saga event {EventType}: {Content}",
                 eventType,
-                correlationId,
                 content);
             return;
         }
@@ -57,22 +65,24 @@ public class SnsSagaEventPublisher : ISagaEventPublisher
             StringValue = eventType
         };
 
-        var traceParent = Activity.Current?.Id;
-        if (!string.IsNullOrWhiteSpace(traceParent))
+        var effectiveTraceParent = !string.IsNullOrWhiteSpace(traceParent)
+            ? traceParent
+            : Activity.Current?.Id;
+
+        if (!string.IsNullOrWhiteSpace(effectiveTraceParent))
         {
             request.MessageAttributes["traceparent"] = new MessageAttributeValue
             {
                 DataType = "String",
-                StringValue = traceParent
+                StringValue = effectiveTraceParent
             };
         }
 
         var response = await _sns.PublishAsync(request, cancellationToken);
         _logger.LogInformation(
-            "Saga event {EventType} published to SNS topic {TopicArn} (MessageId: {MessageId}, EventId: {EventId})",
+            "Saga event {EventType} published to SNS topic {TopicArn} (MessageId: {MessageId})",
             eventType,
             request.TopicArn,
-            response.MessageId,
-            envelope.EventId);
+            response.MessageId);
     }
 }

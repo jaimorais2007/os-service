@@ -12,7 +12,7 @@ using OSService.Infrastructure.Contexts;
 namespace OSService.Infrastructure.Migrations
 {
     [DbContext(typeof(ServiceOrderDbContext))]
-    [Migration("20261108140818_AddSagaSupport")]
+    [Migration("20261108142805_AddSagaSupport")]
     partial class AddSagaSupport
     {
         /// <inheritdoc />
@@ -24,6 +24,44 @@ namespace OSService.Infrastructure.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("OSService.Domain.Entities.OutboxMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<Guid>("CorrelationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<DateTime>("OccurredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TraceParent")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("OccurredAt");
+
+                    b.ToTable("OutboxMessage", (string)null);
+                });
 
             modelBuilder.Entity("OSService.Domain.Entities.ProcessedSagaEvent", b =>
                 {

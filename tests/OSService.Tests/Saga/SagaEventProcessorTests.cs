@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Moq;
 using OSService.Application.Saga;
 using OSService.Domain.Entities;
@@ -11,7 +12,6 @@ namespace OSService.Tests.Saga;
 public class SagaEventProcessorTests
 {
     private readonly Mock<IServiceOrderRepository> _repositoryMock = new();
-    private readonly Mock<ISagaEventPublisher> _sagaPublisherMock = new();
     private readonly Mock<IServiceOrderNotificationPublisher> _notificationMock = new();
     private readonly Mock<IServiceOrderMetrics> _metricsMock = new();
     private readonly SagaEventProcessor _processor;
@@ -20,7 +20,6 @@ public class SagaEventProcessorTests
     {
         _processor = new SagaEventProcessor(
             _repositoryMock.Object,
-            _sagaPublisherMock.Object,
             _notificationMock.Object,
             _metricsMock.Object);
     }
@@ -130,12 +129,8 @@ public class SagaEventProcessorTests
 
         Assert.True(order.IsPaid);
         Assert.Equal(OrderStatus.InProgress, order.GetCurrentStatus());
-        _sagaPublisherMock.Verify(
-            x => x.PublishAsync(
-                SagaEventTypes.ServiceOrderApproved,
-                It.IsAny<Guid>(),
-                It.IsAny<ServiceOrderApprovedPayload>(),
-                It.IsAny<CancellationToken>()),
+        _repositoryMock.Verify(
+            x => x.AddOutboxMessageAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()),
             Times.Never);
         _notificationMock.Verify(
             x => x.PublishNotificationAsync(order.CustomerId, order.Id, "InProgress", It.IsAny<CancellationToken>()),
@@ -143,11 +138,16 @@ public class SagaEventProcessorTests
     }
 
     [Fact]
-    public async Task ProcessAsync_PaymentConfirmedWithParts_ShouldPublishServiceOrderApprovedAndWaitStock()
+    public async Task ProcessAsync_PaymentConfirmedWithParts_ShouldStageServiceOrderApprovedOutboxAndWaitStock()
     {
         var order = CreateWaitingPaymentOrder(withParts: true);
         var partId = order.Parts.First().PartId;
+        OutboxMessage? capturedOutbox = null;
         _repositoryMock.Setup(x => x.GetByIdAsync(order.Id)).ReturnsAsync(order);
+        _repositoryMock
+            .Setup(x => x.AddOutboxMessageAsync(It.IsAny<OutboxMessage>(), It.IsAny<CancellationToken>()))
+            .Callback<OutboxMessage, CancellationToken>((msg, _) => capturedOutbox = msg)
+            .Returns(Task.CompletedTask);
 
         var paymentEnvelope = SagaEventJson.CreateEnvelope(
             SagaEventTypes.PaymentConfirmed,
@@ -158,18 +158,19 @@ public class SagaEventProcessorTests
 
         Assert.True(order.IsPaid);
         Assert.Equal(OrderStatus.WaitingPayment, order.GetCurrentStatus());
-        _sagaPublisherMock.Verify(
-            x => x.PublishAsync(
-                SagaEventTypes.ServiceOrderApproved,
-                order.Id,
-                It.Is<ServiceOrderApprovedPayload>(p =>
-                    p.ServiceOrderId == order.Id &&
-                    p.Parts != null &&
-                    p.Parts.Count == 1 &&
-                    p.Parts[0].PartId == partId &&
-                    p.Parts[0].Quantity == 2),
-                It.IsAny<CancellationToken>()),
-            Times.Once);
+        Assert.NotNull(capturedOutbox);
+        Assert.Equal(SagaEventTypes.ServiceOrderApproved, capturedOutbox.EventType);
+        Assert.Equal(order.Id, capturedOutbox.CorrelationId);
+
+        var stagedEnvelope = JsonSerializer.Deserialize<EventEnvelope>(capturedOutbox.Content, SagaEventJson.Options);
+        Assert.NotNull(stagedEnvelope);
+        var stagedPayload = JsonSerializer.Deserialize<ServiceOrderApprovedPayload>(stagedEnvelope.Payload, SagaEventJson.Options);
+        Assert.NotNull(stagedPayload);
+        Assert.Equal(order.Id, stagedPayload.ServiceOrderId);
+        Assert.NotNull(stagedPayload.Parts);
+        Assert.Single(stagedPayload.Parts);
+        Assert.Equal(partId, stagedPayload.Parts[0].PartId);
+        Assert.Equal(2, stagedPayload.Parts[0].Quantity);
 
         var stockEnvelope = SagaEventJson.CreateEnvelope(
             SagaEventTypes.PartStockEnsured,

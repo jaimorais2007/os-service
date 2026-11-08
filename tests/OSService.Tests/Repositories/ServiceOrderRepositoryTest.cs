@@ -286,6 +286,68 @@ namespace OSService.Tests.Repositories
             }
         }
 
+        [Fact]
+        public async Task OutboxRepository_ShouldGetPendingMarkFailedAndMarkPublished()
+        {
+            var msg1 = new OutboxMessage(
+                Guid.NewGuid(),
+                "BudgetApproved",
+                Guid.NewGuid(),
+                "{\"eventType\":\"BudgetApproved\"}",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                DateTime.UtcNow.AddSeconds(-10));
+
+            var msg2 = new OutboxMessage(
+                Guid.NewGuid(),
+                "ServiceOrderRejected",
+                Guid.NewGuid(),
+                "{\"eventType\":\"ServiceOrderRejected\"}",
+                occurredAt: DateTime.UtcNow);
+
+            await using (var context = CreateContext())
+            {
+                var repository = new ServiceOrderRepository(context);
+                await repository.AddOutboxMessageAsync(msg2);
+                await repository.AddOutboxMessageAsync(msg1);
+                await repository.SaveChangesAsync();
+            }
+
+            await using (var context = CreateContext())
+            {
+                var outboxRepository = new OutboxRepository(context);
+                var pending = await outboxRepository.GetPendingAsync(10);
+
+                Assert.Equal(2, pending.Count);
+                Assert.Equal(msg1.Id, pending[0].Id);
+                Assert.Equal(msg2.Id, pending[1].Id);
+
+                await outboxRepository.MarkFailedAsync(msg1.Id, "Temporary SNS outage");
+                await outboxRepository.MarkFailedAsync(Guid.NewGuid(), "Missing id no-op");
+            }
+
+            await using (var context = CreateContext())
+            {
+                var outboxRepository = new OutboxRepository(context);
+                var pending = await outboxRepository.GetPendingAsync(10);
+
+                Assert.Equal(2, pending.Count);
+                Assert.Equal(1, pending[0].Attempts);
+                Assert.Equal("Temporary SNS outage", pending[0].LastError);
+
+                await outboxRepository.MarkPublishedAsync(msg1.Id);
+                await outboxRepository.MarkPublishedAsync(Guid.NewGuid());
+            }
+
+            await using (var context = CreateContext())
+            {
+                var outboxRepository = new OutboxRepository(context);
+                var remaining = await outboxRepository.GetPendingAsync(10);
+
+                Assert.Single(remaining);
+                Assert.Equal(msg2.Id, remaining[0].Id);
+            }
+        }
+
         public void Dispose()
         {
             _connection.Dispose();
